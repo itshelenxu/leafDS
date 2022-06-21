@@ -22,6 +22,22 @@ template <uint32_t N>
 
   std::unordered_set<uint32_t> checker;
 
+	for (uint32_t i = 0; i < el_count; i++) {
+    // be more likely to insert when we are more empty
+    uint32_t el = dist_el(rng);
+		ds.insert(el);
+		if (true) {
+			checker.insert(el);
+			if (!ds.has(el)) {
+				ds.print();
+				printf("don't have something, %u, we inserted while inserting "
+							 "elements\n",
+							 el);
+				return -1;
+			}
+		}
+	}
+
 /*
   uint64_t start = get_usecs();
   for (uint32_t i = 0; i < el_count; i++) {
