@@ -16,7 +16,7 @@ template <uint32_t N>
 
   LeafDS<N, uint32_t> ds;
   std::mt19937 rng(0);
-  std::uniform_int_distribution<uint32_t> dist_el(1, N * 4);
+  std::uniform_int_distribution<uint32_t> dist_el(1, N * 16);
 
   std::uniform_real_distribution<double> dist_flip(.25, .75);
 
@@ -25,8 +25,12 @@ template <uint32_t N>
 	for (uint32_t i = 0; i < el_count; i++) {
     // be more likely to insert when we are more empty
     uint32_t el = dist_el(rng);
+		// printf("inserting %u, num elts so far %lu\n", el, ds.get_num_elts());
+		// if (ds.has(el)) {
+	  //	printf("\t DS already has %u\n", el);
+		// }
 		ds.insert(el);
-		if (true) {
+		if (check) {
 			checker.insert(el);
 			if (!ds.has(el)) {
 				ds.print();
@@ -34,6 +38,15 @@ template <uint32_t N>
 							 "elements\n",
 							 el);
 				return -1;
+			}
+			for(auto elt : checker) {
+				if(!ds.has(elt)) {
+					ds.print();
+					printf("don't have something, %u, we inserted while inserting "
+								 "elements\n",
+								 el);
+					return -1;
+				}
 			}
 		}
 	}
@@ -236,8 +249,10 @@ int main(int argc, char *argv[]) {
   auto result = options.parse(argc, argv);
   uint32_t el_count = result["el_count"].as<int>();
   bool verify = result["verify"].as<bool>();
+	printf("el count %u\n", el_count);
 
   if (result["update_test"].as<bool>()) {
+		printf("doing update test\n");
     return update_test(el_count, verify);
   }
 
