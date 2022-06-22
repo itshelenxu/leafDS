@@ -10,7 +10,7 @@ LDFLAGS :=
 
 ifeq ($(CILK),1)
 CXX=clang++
-CFLAGS += -fcilkplus
+CFLAGS += -fcilkplus -DCILK=1
 LDFLAGS += -L/home/ubuntu/xvdf_mounted/cilkrts/build/install/lib
 endif
 ifeq ($(SANITIZE),1)

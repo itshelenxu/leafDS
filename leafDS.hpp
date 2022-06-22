@@ -12,8 +12,6 @@
 #include <tuple>
 #include <type_traits>
 
-#define DEBUG 1
-
 template <size_t N, typename key_type, typename... Ts>
 class LeafDS {
 

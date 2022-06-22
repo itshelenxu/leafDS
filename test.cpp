@@ -1,9 +1,9 @@
+// main test driver for leafDS
+#define DEBUG 0
+
 #include "tbassert.h"
-#include "leafDS.hpp"
 #include "cxxopts.hpp"
 #include "helpers.hpp"
-#include "parallel.h"
-
 #include <concepts>
 #include <cstdint>
 #include <limits>
@@ -12,12 +12,16 @@
 #include <set>
 #include <unordered_set>
 
-template <uint32_t N>
-[[nodiscard]] int parallel_test(uint32_t el_count, uint32_t num_copies) {
-	std::vector<LeafDS<N, uint32_t>> dsv(num_copies);
+#include "parallel.h"
+#include "leafDS.hpp"
 
+template <uint32_t N>
+[[nodiscard]] int parallel_test_leafDS(uint32_t el_count, uint32_t num_copies) {
+	std::vector<LeafDS<N, uint32_t>> dsv(num_copies);
+	// __cilkrts_set_param("nworkers","16");
+	printf("getWorkers %d\n", getWorkers());
 	uint64_t start = get_usecs();
-	parallel_for(uint32_t i = 0; i < num_copies; i++) {
+	cilk_for(uint32_t i = 0; i < num_copies; i++) {
 	  std::mt19937 rng(0);
   	std::uniform_int_distribution<uint32_t> dist_el(1, N * 16);
 		for (uint32_t j = 0; j < el_count; j++) {
@@ -26,12 +30,13 @@ template <uint32_t N>
 		}
 	}
 	uint64_t end = get_usecs();
-	printf("parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
+	printf("LeafDS: parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
+
 
 	std::vector<uint64_t> partial_sums(getWorkers() * 8);
 	start = get_usecs();
 
-	parallel_for(uint32_t i = 0; i < num_copies; i++) {
+	cilk_for(uint32_t i = 0; i < num_copies; i++) {
 		partial_sums[getWorkerNum() * 8] += dsv[i].sum_keys();
 	}
 	uint64_t count{0};
@@ -39,9 +44,135 @@ template <uint32_t N>
 		count += partial_sums[i*8];
 	}
 	end = get_usecs();
-	printf("parallel sum time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
+	printf("LeafDS: parallel sum time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
 	printf("total sum %lu\n", count);
 
+	return 0;
+}
+
+template <uint32_t N>
+[[nodiscard]] int parallel_test_sorted_vector(uint32_t el_count, uint32_t num_copies) {
+	std::vector<std::vector<uint32_t>> dsv(num_copies);
+	uint64_t start = get_usecs();
+	cilk_for(uint32_t i = 0; i < num_copies; i++) {
+	  std::mt19937 rng(0);
+  	std::uniform_int_distribution<uint32_t> dist_el(1, N * 16);
+		for (uint32_t j = 0; j < el_count; j++) {
+			uint32_t el = dist_el(rng);
+
+			// find the elt at most the thing to insert
+			size_t idx = 0;
+			for(; idx < dsv[i].size(); idx++) {
+				if(dsv[i][idx] == el) {
+					break;
+				} else if (dsv[i][idx] > el) {
+					break;
+				}
+			}
+
+			// vector does before
+			if(dsv[i].size() == 0 || dsv[i][idx] != el) {
+				dsv[i].insert(dsv[i].begin() + idx, el);
+			}
+
+#if DEBUG
+			// test sortedness
+			for(idx = 1; idx < dsv[i].size(); idx++) {
+				assert(dsv[i][idx] > dsv[i][idx-1]);
+			}
+#endif
+		}
+	}
+	uint64_t end = get_usecs();
+	printf("Sorted vector: parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
+
+	std::vector<uint64_t> partial_sums(getWorkers() * 8);
+	start = get_usecs();
+
+	cilk_for(uint32_t i = 0; i < num_copies; i++) {
+		uint64_t local_sum = 0;
+		for(size_t j = 0; j < dsv[i].size(); j++) {
+			local_sum += dsv[i][j];
+		}
+		partial_sums[getWorkerNum() * 8] += local_sum;
+	}
+	uint64_t count{0};
+	for(int i = 0; i < getWorkers(); i++) {
+		count += partial_sums[i*8];
+	}
+	end = get_usecs();
+	printf("Sorted vector: parallel sum time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
+	printf("total sum %lu\n", count);
+
+	return 0;
+}
+
+template <uint32_t N>
+[[nodiscard]] int parallel_test_unsorted_vector(uint32_t el_count, uint32_t num_copies) {
+	std::vector<std::vector<uint32_t>> dsv(num_copies);
+	uint64_t start = get_usecs();
+	cilk_for(uint32_t i = 0; i < num_copies; i++) {
+	  std::mt19937 rng(0);
+  	std::uniform_int_distribution<uint32_t> dist_el(1, N * 16);
+		for (uint32_t j = 0; j < el_count; j++) {
+			uint32_t el = dist_el(rng);
+
+			// find the elt at most the thing to insert
+			size_t idx = 0;
+			for(; idx < dsv[i].size(); idx++) {
+				if(dsv[i][idx] == el) {
+					break;
+				} 
+			}
+
+			// if not found, add it to the end
+			if(idx == dsv[i].size()) {
+				dsv[i].push_back(el);
+			}
+		}
+	}
+	uint64_t end = get_usecs();
+	printf("Unsorted vector: parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
+
+	std::vector<uint64_t> partial_sums(getWorkers() * 8);
+	start = get_usecs();
+
+	cilk_for(uint32_t i = 0; i < num_copies; i++) {
+		uint64_t local_sum = 0;
+		for(size_t j = 0; j < dsv[i].size(); j++) {
+			local_sum += dsv[i][j];
+		}
+		partial_sums[getWorkerNum() * 8] += local_sum;
+	}
+	uint64_t count{0};
+	for(int i = 0; i < getWorkers(); i++) {
+		count += partial_sums[i*8];
+	}
+	end = get_usecs();
+	printf("Unsorted vector: parallel sum time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
+	printf("total sum %lu\n", count);
+
+	return 0;
+}
+
+
+template <uint32_t N>
+[[nodiscard]] int parallel_test(uint32_t el_count, uint32_t num_copies) {
+	printf("doing parallel test\n");
+	int r = parallel_test_leafDS<1088>(el_count, num_copies);
+	if (r) {
+		return r;
+	}
+
+	r = parallel_test_sorted_vector<1088>(el_count, num_copies);
+	if (r) {
+		return r;
+	}
+
+	r = parallel_test_unsorted_vector<1088>(el_count, num_copies);
+	if (r) {
+		return r;
+	}
 	return 0;
 }
 
