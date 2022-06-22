@@ -2,6 +2,7 @@
 #include "leafDS.hpp"
 #include "cxxopts.hpp"
 #include "helpers.hpp"
+#include "parallel.h"
 
 #include <concepts>
 #include <cstdint>
@@ -10,6 +11,39 @@
 #include <random>
 #include <set>
 #include <unordered_set>
+
+template <uint32_t N>
+[[nodiscard]] int parallel_test(uint32_t el_count, uint32_t num_copies) {
+	std::vector<LeafDS<N, uint32_t>> dsv(num_copies);
+
+	uint64_t start = get_usecs();
+	parallel_for(uint32_t i = 0; i < num_copies; i++) {
+	  std::mt19937 rng(0);
+  	std::uniform_int_distribution<uint32_t> dist_el(1, N * 16);
+		for (uint32_t j = 0; j < el_count; j++) {
+			uint32_t el = dist_el(rng);
+			dsv[i].insert(el);
+		}
+	}
+	uint64_t end = get_usecs();
+	printf("parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
+
+	std::vector<uint64_t> partial_sums(getWorkers() * 8);
+	start = get_usecs();
+
+	parallel_for(uint32_t i = 0; i < num_copies; i++) {
+		partial_sums[getWorkerNum() * 8] += dsv[i].sum_keys();
+	}
+	uint64_t count{0};
+	for(int i = 0; i < getWorkers(); i++) {
+		count += partial_sums[i*8];
+	}
+	end = get_usecs();
+	printf("parallel sum time for %u copies of %u elts each = %lu us\n", num_copies, el_count, end - start);
+	printf("total sum %lu\n", count);
+
+	return 0;
+}
 
 template <uint32_t N>
 [[nodiscard]] int update_test_templated(uint32_t el_count,
@@ -252,14 +286,18 @@ int main(int argc, char *argv[]) {
   // clang-format off
   options.add_options()
     ("el_count", "how many values to insert", cxxopts::value<int>()->default_value( "100000"))
+    ("num_copies", "number of copies for parallel test", cxxopts::value<int>()->default_value( "100000"))
     ("v, verify", "verify the results of the test, might be much slower")
     ("update_test", "time updating")
-    ("update_values_test", "time updating with values")
-    ("help","Print help");
+		("parallel_test", "time to do parallel test")
+    ("update_values_test", "time updating with values");
+    // ("help","Print help");
   // clang-format on
 
   auto result = options.parse(argc, argv);
   uint32_t el_count = result["el_count"].as<int>();
+  uint32_t num_copies = result["num_copies"].as<int>();
+
   bool verify = result["verify"].as<bool>();
 	printf("el count %u\n", el_count);
 
@@ -271,5 +309,10 @@ int main(int argc, char *argv[]) {
   if (result["update_values_test"].as<bool>()) {
     return update_values_test(el_count, verify);
   }
+	
+	if (result["parallel_test"].as<bool>()) {
+		printf("doing parallel test\n");
+		return parallel_test<1088>(el_count, num_copies);
+	}
   return 0;
 }

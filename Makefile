@@ -1,14 +1,18 @@
 OPT?=3
 VALGRIND?=0
 SANITIZE?=0
-
+CILK?=0
 
 
 CFLAGS := -Wall -Wno-address-of-packed-member -Wextra -O$(OPT) -g  -std=c++20 -fmax-errors=1 -ftemplate-backtrace-limit=0 
 
 LDFLAGS := 
 
-
+ifeq ($(CILK),1)
+CXX=clang++
+CFLAGS += -fcilkplus
+LDFLAGS += -L/home/ubuntu/xvdf_mounted/cilkrts/build/install/lib
+endif
 ifeq ($(SANITIZE),1)
 CFLAGS += -fsanitize=undefined,address -fno-omit-frame-pointer
 endif

@@ -630,7 +630,12 @@ bool LeafDS<N, key_type, Ts...>::insert(element_type e) {
 		// clear log
 		clear_range(0, log_size);
 	}
-	assert(count_up_elts() == num_elts_total);
+
+	if (count_up_elts() != num_elts_total) {
+		print();
+		printf("counted %lu, num elts %lu\n", count_up_elts(), num_elts_total);
+		assert(false);
+	}
 	return true;
 }
 
