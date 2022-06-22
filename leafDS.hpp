@@ -11,7 +11,6 @@
 #include <iostream>
 #include <tuple>
 #include <type_traits>
-#include "tbassert.h"
 
 #define DEBUG 1
 
@@ -96,6 +95,8 @@ public:
 	bool is_full() { return num_elts_total >= max_density; }
 	void print();
 
+	[[nodiscard]] uint64_t sum_keys() const;
+	template <bool no_early_exit, size_t... Is, class F> bool map(F f) const;
 	// main top-level functions
 	// given a key, return the index of the largest elt at least e
 	[[nodiscard]] uint32_t search(key_type e) const;
@@ -108,6 +109,9 @@ public:
 
 	// whether elt e was in the DS
   [[nodiscard]] bool has(key_type e);
+
+	// index of element e in the DS, N if not found
+  [[nodiscard]] size_t get_index(key_type e);
 
   auto blind_read_key(uint32_t index) const {
     return std::get<0>(SOA_type::get_static(array.data(), N, index));
@@ -560,6 +564,13 @@ template <size_t N, typename key_type, typename... Ts>
 bool LeafDS<N, key_type, Ts...>::insert(element_type e) {
 	const key_type key = std::get<0>(e);
 
+	// if element is found in the data structure, update it
+	size_t index = get_index(key);
+	if(index < N) {
+		blind_write(e, index);
+		return false;
+	}
+
 	// first try to update the key if it is in the log
 	auto result = update_in_range_if_exists(0, num_elts_in_log, e);
 	if (result.first) { return false; }
@@ -624,19 +635,20 @@ bool LeafDS<N, key_type, Ts...>::insert(element_type e) {
 }
 
 
-// TODO: handle if you look for something smaller than min
+
+// return N if not found, otherwise return the slot the key is at
 template <size_t N, typename key_type, typename... Ts>
-bool LeafDS<N, key_type, Ts...>::has(key_type e) {
+size_t LeafDS<N, key_type, Ts...>::get_index(key_type e) {
 	// check the log
 	for(size_t i = 0; i < num_elts_in_log; i++) {
 		if(e == blind_read_key(i)) {
-			return true;
+			return i;
 		}
 	}
 
 	// if less than current min, should not be in ds
 	if (e < blind_read_key(header_start)) {
-		return false;
+		return N;
 	}
 	assert( e >= blind_read_key(header_start) );
 	size_t block_idx = find_block(e);
@@ -645,23 +657,30 @@ bool LeafDS<N, key_type, Ts...>::has(key_type e) {
 #endif
 	// check the header
 	if (e == blind_read_key(header_start + block_idx)) {
-		return true;
+		return header_start + block_idx;
 	}
 	
 	// check the block
 	auto range = get_block_range(block_idx);
 	for(size_t i = range.first; i < range.second; i++) {
 		if (blind_read_key(i) == NULL_VAL) {
-			return false;
+			return N;
 		}
 		if (blind_read_key(i) == e) {
-			return true;
+			return i;
 		}
 	}
-
-	return false;
+	return N;
 }
 
+
+// return true iff element exists in the data structure
+template <size_t N, typename key_type, typename... Ts>
+bool LeafDS<N, key_type, Ts...>::has(key_type e) {
+	return (get_index(e) != N);
+}
+
+// print the range [start, end)
 template <size_t N, typename key_type, typename... Ts>
 void LeafDS<N, key_type, Ts...>::print_range(size_t start, size_t end) {
 	SOA_type::map_range_with_index_static(
@@ -683,6 +702,7 @@ void LeafDS<N, key_type, Ts...>::print_range(size_t start, size_t end) {
 	printf("\n");
 }
 
+// print the entire thing
 template <size_t N, typename key_type, typename... Ts>
 void LeafDS<N, key_type, Ts...>::print() {
   printf("total num elts %lu\n", num_elts_total);
@@ -704,3 +724,37 @@ void LeafDS<N, key_type, Ts...>::print() {
 	}
 	printf("\n");
 }
+
+template <size_t N, typename key_type, typename... Ts>
+template <bool no_early_exit, size_t... Is, class F>
+bool LeafDS<N, key_type, Ts...>::map(F f) const {
+
+  static_assert(std::is_invocable_v<decltype(&F::operator()), F &, uint32_t,
+                                    NthType<Is>...>,
+                "update function must match given types");
+
+  // not stored dense
+  for (uint32_t i = 0; i < N; i++) {
+    auto index = get_key_array(i);
+    if (index != NULL_VAL) {
+      auto element =
+          SOA_type::template get_static<0, (Is + 1)...>(array.data(), N, i);
+      if constexpr (no_early_exit) {
+        std::apply(f, element);
+      } else {
+        if (std::apply(f, element)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+template <size_t N, typename key_type, typename... Ts>
+uint64_t LeafDS<N, key_type, Ts...>::sum_keys() const {
+  uint64_t result = 0;
+  map<true>([&](key_type key) { result += key; });
+  return result;
+}
+

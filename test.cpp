@@ -1,3 +1,4 @@
+#include "tbassert.h"
 #include "leafDS.hpp"
 #include "cxxopts.hpp"
 #include "helpers.hpp"
@@ -51,6 +52,17 @@ template <uint32_t N>
 		}
 	}
 
+	uint64_t correct_sum = 0;
+	for (auto elt : checker) {
+		correct_sum += elt;
+	}
+
+	uint64_t sum = ds.sum_keys();
+	if (correct_sum != sum) {
+		ds.print();
+		tbassert(correct_sum == sum, "got sum %lu, should be %lu\n", sum, correct_sum);
+	}
+	printf("got sum %lu\n", sum);
 /*
   uint64_t start = get_usecs();
   for (uint32_t i = 0; i < el_count; i++) {
