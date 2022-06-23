@@ -12,7 +12,7 @@
 #include <tuple>
 #include <type_traits>
 
-template <size_t N, typename key_type, typename... Ts>
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 class LeafDS {
 
   static constexpr bool binary = (sizeof...(Ts) == 0);
@@ -31,20 +31,15 @@ class LeafDS {
   using SOA_type = typename std::conditional<binary, SOA<key_type>,
                                              SOA<key_type, Ts...>>::type;
 
-  static_assert(N != 0, "N cannot be 0");
 
 private:
 	static constexpr key_type NULL_VAL = {};
 
-	// number of slots in the log, header, and each block
-	static constexpr size_t log_size = 32;
-	static constexpr size_t header_size = log_size;
 	static constexpr size_t num_blocks = header_size;
+	static constexpr size_t N = log_size + header_size + header_size * num_blocks;
 
-	// block size using the remaining space
-	static_assert((N - header_size - log_size) % num_blocks == 0);
-	static constexpr size_t block_size = (N - header_size - log_size)/num_blocks;
-
+  static_assert(N != 0, "N cannot be 0");
+	
 	// start of each section
 	static constexpr size_t header_start = log_size;
 	static constexpr size_t blocks_start = log_size + header_size;
@@ -127,75 +122,11 @@ public:
   auto blind_read(uint32_t index) {
     return SOA_type::get_static(array.data(), N, index);
   }
-
-/*
-	// iterator after here
-	// TODO: rename it to be clear this only supports packed regions
-	class packed_iterator;
-
-	class packed_iterator {
-		//! The key type of the btree. Returned by key().
-		// typedef typename LeafDS::key_type key_type;
-
-		typedef LeafDS<N, key_type, Ts...> container_type;
-		// typedef typename container_type::iterator iterator_type;
-
-		using iterator_category = std::random_access_iterator_tag;
-
-		//! The value type of the btree. Returned by operator*().
-		typedef typename LeafDS::value_type value_type;
-
-		//! Reference to the value_type. STL required.
-		typedef value_type& reference;
-
-		//! Pointer to the value_type. STL required.
-		typedef value_type* pointer;
-
-		typedef packed_iterator self;
-
-protected:
-		uint32_t curr_slot;
-
-public:
-		// https://en.cppreference.com/w/cpp/named_req/RandomAccessIterator
-		// default
-		// iterator_type() : curr_slot(0) { }
-
-		// with slot
-		packed_iterator(uint32_t s) : curr_slot(s) { }
-
-		reference operator * () const {
-		  return SOA_type::get_static(array.data(), N, curr_slot);
-
-			// return blind_read_key(curr_slot);
-		}
-
-		packed_iterator& operator ++ () {
-			curr_slot++;
-			return *this;
-		}
-
-		packed_iterator& operator + (size_t s) {
-			curr_slot += s;
-			return *this;
-		}
-
-		packed_iterator& operator - (size_t s) {
-			curr_slot -= s;
-			return *this;
-		}
-
-		bool operator > () {
-			return 
-		}
-	};
-*/
 };
 
-
 // precondition - keys at index already match
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::update_val_at_index(element_type e, size_t index) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_val_at_index(element_type e, size_t index) {
 	// update its value if needed
 	if constexpr (!binary) {
 		if (leftshift_tuple(SOA_type::get_static(array.data(), N, index)) !=
@@ -206,14 +137,14 @@ void LeafDS<N, key_type, Ts...>::update_val_at_index(element_type e, size_t inde
 }
 
 // precondition - this slot is empty
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::place_elt_at_index(element_type e, size_t index) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::place_elt_at_index(element_type e, size_t index) {
 	SOA_type::get_static(array.data(), N, index) = e;
 	num_elts_total++;
 }
 
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::clear_range(size_t start, size_t end) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::clear_range(size_t start, size_t end) {
   SOA_type::map_range_static(
       array.data(), N,
       [](auto &...args) { std::forward_as_tuple(args...) = element_type(); },
@@ -224,8 +155,8 @@ void LeafDS<N, key_type, Ts...>::clear_range(size_t start, size_t end) {
 // input: deduped log to flush, number of elements in the log, count of elements to flush to each block, count of elements per block
 // merge all elements from blocks and log in sorted order in the intermediate buffer
 // split them evenly amongst the blocks
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::global_redistribute(element_type* log_to_flush, size_t num_to_flush, unsigned short* count_per_block) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::global_redistribute(element_type* log_to_flush, size_t num_to_flush, unsigned short* count_per_block) {
 	// sort each block
 	// size_t end_blocks = 0;
 	for (size_t i = 0; i < num_blocks; i++) {
@@ -377,14 +308,14 @@ void LeafDS<N, key_type, Ts...>::global_redistribute(element_type* log_to_flush,
 }
 
 // return index of the block that this elt would fall in
-template <size_t N, typename key_type, typename... Ts>
-size_t LeafDS<N, key_type, Ts...>::find_block(key_type key) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block(key_type key) {
 	return find_block_with_hint(key, 0);
 }
 
 // return index of the block that this elt would fall in
-template <size_t N, typename key_type, typename... Ts>
-size_t LeafDS<N, key_type, Ts...>::find_block_with_hint(key_type key, size_t hint) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_with_hint(key_type key, size_t hint) {
 	size_t i = header_start + hint;
 	assert(key >= blind_read_key(i));
 	for( ; i < blocks_start; i++) {
@@ -400,18 +331,18 @@ size_t LeafDS<N, key_type, Ts...>::find_block_with_hint(key_type key, size_t hin
 
 // given a src, dest indices 
 // move elt at src into dest
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::copy_src_to_dest(size_t src, size_t dest) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::copy_src_to_dest(size_t src, size_t dest) {
 	SOA_type::get_static(array.data(), N, dest) =
 		SOA_type::get_static(array.data(), N, src);
 }
 
 
 // precondition: range must be packed
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::sort_range(size_t start_idx, size_t end_idx) {
-	auto start = typename LeafDS<N, key_type, Ts...>::SOA_type::Iterator(array.data(), N, start_idx);
-	auto end = typename LeafDS<N, key_type, Ts...>::SOA_type::Iterator(array.data(), N, end_idx);
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_range(size_t start_idx, size_t end_idx) {
+	auto start = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(array.data(), N, start_idx);
+	auto end = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(array.data(), N, end_idx);
 	std::sort(start, end, [](auto lhs, auto rhs) { return std::get<0>(typename SOA_type::T(lhs)) < std::get<0>(typename SOA_type::T(rhs)); } );
 #if DEBUG
 	for(size_t i = start_idx + 1; i < end_idx; i++) {
@@ -421,8 +352,8 @@ void LeafDS<N, key_type, Ts...>::sort_range(size_t start_idx, size_t end_idx) {
 }
 
 // sort the log
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::sort_log() {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_log() {
 	sort_range(0, num_elts_in_log);
 }
 
@@ -430,8 +361,8 @@ void LeafDS<N, key_type, Ts...>::sort_log() {
 // if e is in the range, update it and return true
 // otherwise return false
 // also return index found or index stopped at
-template <size_t N, typename key_type, typename... Ts>
-std::pair<bool, size_t> LeafDS<N, key_type, Ts...>::update_in_range_if_exists(size_t start,
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range_if_exists(size_t start,
 	size_t end, element_type e) {
 	const key_type key = std::get<0>(e);
 	size_t i = start;
@@ -448,8 +379,8 @@ std::pair<bool, size_t> LeafDS<N, key_type, Ts...>::update_in_range_if_exists(si
 } 
 
 // given a block index, return its range [start, end)
-template <size_t N, typename key_type, typename... Ts>
-std::pair<size_t, size_t> LeafDS<N, key_type, Ts...>::get_block_range(size_t block_idx) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+std::pair<size_t, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_block_range(size_t block_idx) {
 	tbassert(block_idx < num_blocks, "block idx %lu\n", block_idx);
 	size_t block_start = blocks_start + block_idx * block_size;
 	size_t block_end = block_start + block_size;
@@ -459,8 +390,8 @@ std::pair<size_t, size_t> LeafDS<N, key_type, Ts...>::get_block_range(size_t blo
 }
 
 // count up the number of elements in this b lock
-template <size_t N, typename key_type, typename... Ts>
-unsigned short LeafDS<N, key_type, Ts...>::count_block(size_t block_idx) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count_block(size_t block_idx) {
 	size_t block_start = blocks_start + block_idx * block_size;
 	size_t block_end = block_start + block_size;
 
@@ -473,8 +404,8 @@ unsigned short LeafDS<N, key_type, Ts...>::count_block(size_t block_idx) {
 }
 
 // flush the log to the blocks
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::flush_log_to_blocks() {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_blocks() {
 	sort_log();
 
 	// dedup the log wrt the blocks
@@ -548,8 +479,8 @@ void LeafDS<N, key_type, Ts...>::flush_log_to_blocks() {
 	tbassert(idx_in_log == num_to_flush, "flushed %lu, should have flushed %u\n", idx_in_log, num_to_flush);
 }
 
-template <size_t N, typename key_type, typename... Ts>
-std::pair<bool, size_t> LeafDS<N, key_type, Ts...>::update_in_block_if_exists(element_type e) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_block_if_exists(element_type e) {
 	const key_type key = std::get<0>(e);
 	// if key is in the current range of this node, try to find it in the block
 	auto block_idx = find_block(key);
@@ -558,8 +489,8 @@ std::pair<bool, size_t> LeafDS<N, key_type, Ts...>::update_in_block_if_exists(el
 	return update_in_range_if_exists(block_range.first, block_range.second, e);
 }
 
-template <size_t N, typename key_type, typename... Ts>
-bool LeafDS<N, key_type, Ts...>::insert(element_type e) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_type e) {
 	const key_type key = std::get<0>(e);
 
 	// if element is found in the data structure, update it
@@ -640,8 +571,8 @@ bool LeafDS<N, key_type, Ts...>::insert(element_type e) {
 
 
 // return N if not found, otherwise return the slot the key is at
-template <size_t N, typename key_type, typename... Ts>
-size_t LeafDS<N, key_type, Ts...>::get_index(key_type e) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key_type e) {
 	// check the log
 	for(size_t i = 0; i < num_elts_in_log; i++) {
 		if(e == blind_read_key(i)) {
@@ -678,14 +609,14 @@ size_t LeafDS<N, key_type, Ts...>::get_index(key_type e) {
 
 
 // return true iff element exists in the data structure
-template <size_t N, typename key_type, typename... Ts>
-bool LeafDS<N, key_type, Ts...>::has(key_type e) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::has(key_type e) {
 	return (get_index(e) != N);
 }
 
 // print the range [start, end)
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::print_range(size_t start, size_t end) {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print_range(size_t start, size_t end) {
 	SOA_type::map_range_with_index_static(
 			(void *)array.data(), N,
 			[](size_t index, key_type key, auto... args) {
@@ -706,8 +637,8 @@ void LeafDS<N, key_type, Ts...>::print_range(size_t start, size_t end) {
 }
 
 // print the entire thing
-template <size_t N, typename key_type, typename... Ts>
-void LeafDS<N, key_type, Ts...>::print() {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print() {
   printf("total num elts %lu\n", num_elts_total);
   SOA_type::print_type_details();
 
@@ -728,9 +659,9 @@ void LeafDS<N, key_type, Ts...>::print() {
 	printf("\n");
 }
 
-template <size_t N, typename key_type, typename... Ts>
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 template <bool no_early_exit, size_t... Is, class F>
-bool LeafDS<N, key_type, Ts...>::map(F f) const {
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) const {
 
   static_assert(std::is_invocable_v<decltype(&F::operator()), F &, uint32_t,
                                     NthType<Is>...>,
@@ -754,8 +685,8 @@ bool LeafDS<N, key_type, Ts...>::map(F f) const {
   return false;
 }
 
-template <size_t N, typename key_type, typename... Ts>
-uint64_t LeafDS<N, key_type, Ts...>::sum_keys() const {
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys() const {
   uint64_t result = 0;
   map<true>([&](key_type key) { result += key; });
   return result;

@@ -15,11 +15,14 @@
 #include "parallel.h"
 #include "leafDS.hpp"
 
-template <uint32_t N>
+#define LOG_SIZE 32
+#define HEADER_SIZE 32
+#define BLOCK_SIZE 32
+
+#define N LOG_SIZE + HEADER_SIZE + BLOCK_SIZE * HEADER_SIZE
+
 [[nodiscard]] int parallel_test_leafDS(uint32_t el_count, uint32_t num_copies) {
-	std::vector<LeafDS<N, uint32_t>> dsv(num_copies);
-	// __cilkrts_set_param("nworkers","16");
-	printf("getWorkers %d\n", getWorkers());
+	std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, uint32_t>> dsv(num_copies);
 	uint64_t start = get_usecs();
 	cilk_for(uint32_t i = 0; i < num_copies; i++) {
 	  std::mt19937 rng(0);
@@ -50,7 +53,6 @@ template <uint32_t N>
 	return 0;
 }
 
-template <uint32_t N>
 [[nodiscard]] int parallel_test_sorted_vector(uint32_t el_count, uint32_t num_copies) {
 	std::vector<std::vector<uint32_t>> dsv(num_copies);
 	uint64_t start = get_usecs();
@@ -107,7 +109,6 @@ template <uint32_t N>
 	return 0;
 }
 
-template <uint32_t N>
 [[nodiscard]] int parallel_test_unsorted_vector(uint32_t el_count, uint32_t num_copies) {
 	std::vector<std::vector<uint32_t>> dsv(num_copies);
 	uint64_t start = get_usecs();
@@ -156,34 +157,31 @@ template <uint32_t N>
 }
 
 
-template <uint32_t N>
 [[nodiscard]] int parallel_test(uint32_t el_count, uint32_t num_copies) {
 	printf("doing parallel test\n");
-	int r = parallel_test_leafDS<1088>(el_count, num_copies);
+	int r = parallel_test_leafDS(el_count, num_copies);
 	if (r) {
 		return r;
 	}
 
-	r = parallel_test_sorted_vector<1088>(el_count, num_copies);
+	r = parallel_test_sorted_vector(el_count, num_copies);
 	if (r) {
 		return r;
 	}
 
-	r = parallel_test_unsorted_vector<1088>(el_count, num_copies);
+	r = parallel_test_unsorted_vector(el_count, num_copies);
 	if (r) {
 		return r;
 	}
 	return 0;
 }
 
-template <uint32_t N>
 [[nodiscard]] int update_test_templated(uint32_t el_count,
                                             bool check = false) {
 
-  LeafDS<N, uint32_t> ds;
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, uint32_t> ds;
   std::mt19937 rng(0);
   std::uniform_int_distribution<uint32_t> dist_el(1, N * 16);
-
   std::uniform_real_distribution<double> dist_flip(.25, .75);
 
   std::unordered_set<uint32_t> checker;
@@ -217,15 +215,18 @@ template <uint32_t N>
 		}
 	}
 
-	uint64_t correct_sum = 0;
-	for (auto elt : checker) {
-		correct_sum += elt;
-	}
 
 	uint64_t sum = ds.sum_keys();
-	if (correct_sum != sum) {
-		ds.print();
-		tbassert(correct_sum == sum, "got sum %lu, should be %lu\n", sum, correct_sum);
+
+	if (check) {
+		uint64_t correct_sum = 0;
+		for (auto elt : checker) {
+			correct_sum += elt;
+		}
+		if (correct_sum != sum) {
+			ds.print();
+			tbassert(correct_sum == sum, "got sum %lu, should be %lu\n", sum, correct_sum);
+		}
 	}
 	printf("got sum %lu\n", sum);
 /*
@@ -292,14 +293,13 @@ template <uint32_t N>
 
 [[nodiscard]] int update_test(uint32_t el_count, bool check = false) {
   int r = 0;
-  r = update_test_templated<1088>(el_count, check);
+  r = update_test_templated(el_count, check);
   if (r) {
     return r;
   }
   return 0;
 }
 
-template <uint32_t N>
 [[nodiscard]] int update_values_test_templated(uint32_t el_count,
                                                    bool check = false) {
 /*																								
@@ -398,7 +398,7 @@ template <uint32_t N>
 [[nodiscard]] int update_values_test(uint32_t el_count,
                                          bool check = false) {
   int r = 0;
-  r = update_values_test_templated<1U << 6>(el_count, check);
+  r = update_values_test_templated(el_count, check);
   if (r) {
     return r;
   }
@@ -433,7 +433,6 @@ int main(int argc, char *argv[]) {
 	printf("el count %u\n", el_count);
 
   if (result["update_test"].as<bool>()) {
-		printf("doing update test\n");
     return update_test(el_count, verify);
   }
 
@@ -443,7 +442,7 @@ int main(int argc, char *argv[]) {
 	
 	if (result["parallel_test"].as<bool>()) {
 		printf("doing parallel test\n");
-		return parallel_test<1088>(el_count, num_copies);
+		return parallel_test(el_count, num_copies);
 	}
   return 0;
 }
