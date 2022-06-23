@@ -74,7 +74,7 @@ private:
 	size_t find_block_with_hint(key_type key, size_t hint);
 	void global_redistribute(element_type* log_to_flush, size_t num_to_flush, unsigned short* count_per_block);
 	void copy_src_to_dest(size_t src, size_t dest);
-	void flush_log_to_blocks();
+	void flush_log_to_blocks(size_t max_to_flush);
 	void sort_log();
 	void sort_range(size_t start_idx, size_t end_idx);
 	std::pair<size_t, size_t> get_block_range(size_t block_idx);
@@ -88,8 +88,8 @@ public:
 	bool is_full() { return num_elts_total >= max_density; }
 	void print();
 
-	[[nodiscard]] uint64_t sum_keys() const;
-	template <bool no_early_exit, size_t... Is, class F> bool map(F f) const;
+	[[nodiscard]] uint64_t sum_keys();
+	template <bool no_early_exit, size_t... Is, class F> bool map(F f);
 	// main top-level functions
 	// given a key, return the index of the largest elt at least e
 	[[nodiscard]] uint32_t search(key_type e) const;
@@ -405,21 +405,23 @@ unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count
 
 // flush the log to the blocks
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_blocks() {
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_blocks(size_t max_to_flush) {
 	sort_log();
 
-	// dedup the log wrt the blocks
-
+	// dedup the log wrt the blocks, putting all new elts in log_to_flush
 	element_type log_to_flush[log_size];
 	unsigned short num_to_flush = 0;
 	unsigned short num_to_flush_per_block[num_blocks];
-	memset(num_to_flush_per_block, 0, num_blocks * sizeof(unsigned short));
 	size_t hint = 0;
+	memset(num_to_flush_per_block, 0, num_blocks * sizeof(unsigned short));
 
-	// dedup the log
-	for(size_t i = 0; i < log_size; i++) {
+	// look for the sorted log in the blocks
+	for(size_t i = 0; i < max_to_flush; i++) {
 		key_type key_to_flush = blind_read_key(i);
+
+#if DEBUG
 		assert(key_to_flush >= blind_read_key(log_size));
+#endif
 
 		size_t block_idx = find_block_with_hint(key_to_flush, hint);
 		assert(block_idx < num_blocks);
@@ -476,7 +478,9 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 		idx_in_log += num_to_flush_per_block[i];
 	}
 
+#if DEBUG
 	tbassert(idx_in_log == num_to_flush, "flushed %lu, should have flushed %u\n", idx_in_log, num_to_flush);
+#endif
 }
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
@@ -489,16 +493,21 @@ std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts..
 	return update_in_range_if_exists(block_range.first, block_range.second, e);
 }
 
+
+// return true if the element was inserted, false otherwise
+// may return true if the element was already there due to it being a pseudo-set
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_type e) {
 	const key_type key = std::get<0>(e);
 
+	/*
 	// if element is found in the data structure, update it
 	size_t index = get_index(key);
 	if(index < N) {
 		blind_write(e, index);
 		return false;
 	}
+	*/
 
 	// first try to update the key if it is in the log
 	auto result = update_in_range_if_exists(0, num_elts_in_log, e);
@@ -518,15 +527,17 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 
 	// there should always be space in the log
 	assert(num_elts_in_log < log_size);
+
+	// if not bound, add it to the log
 	blind_write(e, num_elts_in_log);
 	num_elts_total++;
 	num_elts_in_log++;
 	
 	if (num_elts_in_log == log_size) { // we filled the log
 		sort_log();
+
 		// if this is the first time we are flushing the log, just make the sorted log the header
 		if (get_min_block_key() == 0) {
-			// move log into header
 			for(size_t i = 0; i < log_size; i++) {
 		    SOA_type::get_static(array.data(), N, i + log_size) =
 	        SOA_type::get_static(array.data(), N, i);
@@ -553,18 +564,21 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 			// note: at this point, the min key is repeated in the
 			// header and log (if there was a new min).  in the flush, it will just
 			// get deduped
-			flush_log_to_blocks();
+			flush_log_to_blocks(log_size);
 		}
-		num_elts_in_log = 0;
+
 		// clear log
+		num_elts_in_log = 0;
 		clear_range(0, log_size);
 	}
 
+#if DEBUG
 	if (count_up_elts() != num_elts_total) {
 		print();
 		printf("counted %lu, num elts %lu\n", count_up_elts(), num_elts_total);
 		assert(false);
 	}
+#endif
 	return true;
 }
 
@@ -606,7 +620,6 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key
 	}
 	return N;
 }
-
 
 // return true iff element exists in the data structure
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
@@ -659,16 +672,24 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print() {
 	printf("\n");
 }
 
+// apply the function F to the entire data structure
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 template <bool no_early_exit, size_t... Is, class F>
-bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) const {
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
+	// first do the flush
+	flush_log_to_blocks(num_elts_in_log);
 
+	// clear log
+	num_elts_in_log = 0;
+	clear_range(0, log_size);
+
+	// now there should be only stuff in the rest of the DS
   static_assert(std::is_invocable_v<decltype(&F::operator()), F &, uint32_t,
                                     NthType<Is>...>,
                 "update function must match given types");
 
-  // not stored dense
-  for (uint32_t i = 0; i < N; i++) {
+	// start from the header since we flushed the log
+  for (uint32_t i = log_size; i < N; i++) {
     auto index = get_key_array(i);
     if (index != NULL_VAL) {
       auto element =
@@ -686,7 +707,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) const 
 }
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys() const {
+uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys() {
   uint64_t result = 0;
   map<true>([&](key_type key) { result += key; });
   return result;
