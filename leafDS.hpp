@@ -77,7 +77,7 @@ private:
 	void flush_log_to_blocks(size_t max_to_flush);
 	void sort_log();
 	void sort_range(size_t start_idx, size_t end_idx);
-	std::pair<size_t, size_t> get_block_range(size_t block_idx);
+	inline std::pair<size_t, size_t> get_block_range(size_t block_idx);
 	std::pair<bool, size_t> update_in_range_if_exists(size_t start, size_t end, element_type e);
 	std::pair<bool, size_t> update_in_block_if_exists(element_type e);
 	unsigned short count_block(size_t block_idx);
@@ -89,6 +89,8 @@ public:
 	void print();
 
 	[[nodiscard]] uint64_t sum_keys();
+	[[nodiscard]] uint64_t sum_keys_with_map();
+	[[nodiscard]] uint64_t sum_keys_direct();
 	template <bool no_early_exit, size_t... Is, class F> bool map(F f);
 	// main top-level functions
 	// given a key, return the index of the largest elt at least e
@@ -102,6 +104,8 @@ public:
 
 	// whether elt e was in the DS
   [[nodiscard]] bool has(key_type e);
+
+  [[nodiscard]] size_t get_index_in_blocks(key_type e);
 
 	// index of element e in the DS, N if not found
   [[nodiscard]] size_t get_index(key_type e);
@@ -155,6 +159,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::clear_range(siz
 // input: deduped log to flush, number of elements in the log, count of elements to flush to each block, count of elements per block
 // merge all elements from blocks and log in sorted order in the intermediate buffer
 // split them evenly amongst the blocks
+// TODO: count global redistributes 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::global_redistribute(element_type* log_to_flush, size_t num_to_flush, unsigned short* count_per_block) {
 	// sort each block
@@ -183,7 +188,9 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::global_redistri
 	while(log_ptr < log_end && cur_block < num_blocks) {
 		const key_type log_key = std::get<0>(log_to_flush[log_ptr]);
 		const key_type block_key = blind_read_key(blocks_ptr);
+#if DEBUG
 		assert(log_key != block_key);
+#endif
 		if (log_key < block_key) {
 #if DEBUG_PRINT
 			printf("pushed %u from log to buffer\n", std::get<0>(log_to_flush[log_ptr]));
@@ -225,7 +232,9 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::global_redistri
 			} else { // if we are still in this block, keep going
 				blocks_ptr++;
 			}
+#if DEBUG
 			assert(prev_blocks_ptr != blocks_ptr); // made sure we advanced
+#endif
 		}
 	}
 
@@ -264,8 +273,10 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::global_redistri
 			blocks_ptr++;
 		}
 	}
-
+#if DEBUG
 	assert(buffer.size() < num_blocks * block_size);
+#endif
+	num_elts_total = buffer.size();
 
 #if DEBUG_PRINT
 	printf("*** BUFFER ***\n");
@@ -304,7 +315,9 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::global_redistri
 			num_so_far++;
 		}
 	}
+#if DEBUG
 	assert(num_so_far == buffer.size());
+#endif
 }
 
 // return index of the block that this elt would fall in
@@ -317,7 +330,9 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block(ke
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_with_hint(key_type key, size_t hint) {
 	size_t i = header_start + hint;
+#if DEBUG
 	assert(key >= blind_read_key(i));
+#endif
 	for( ; i < blocks_start; i++) {
 		if(blind_read_key(i) == key)  {
 			return i - header_start;
@@ -325,7 +340,9 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_wi
 			break;
 		}
 	}
+#if DEBUG
 	assert(i - header_start - 1 < num_blocks);
+#endif
 	return i - header_start - 1;
 }
 
@@ -339,12 +356,17 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::copy_src_to_des
 
 
 // precondition: range must be packed
+// TODO: vectorized sorting
+// one way would be to access the key array, sort that in a vectorized way, and apply
+// the permutation vector to later value vectors
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_range(size_t start_idx, size_t end_idx) {
 	auto start = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(array.data(), N, start_idx);
 	auto end = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(array.data(), N, end_idx);
+
 	std::sort(start, end, [](auto lhs, auto rhs) { return std::get<0>(typename SOA_type::T(lhs)) < std::get<0>(typename SOA_type::T(rhs)); } );
 #if DEBUG
+	// check sortedness
 	for(size_t i = start_idx + 1; i < end_idx; i++) {
 		assert(blind_read_key(i-1) < blind_read_key(i));
 	}
@@ -366,7 +388,7 @@ std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts..
 	size_t end, element_type e) {
 	const key_type key = std::get<0>(e);
 	size_t i = start;
-	for(; i < end; i++) {
+	for(; i < end; i++) { // TODO: vectorize this for loop using AVX-512
 		// if found, update the val and return
 		if (key == get_key_array(i)) {
 			update_val_at_index(e, i);
@@ -380,12 +402,14 @@ std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts..
 
 // given a block index, return its range [start, end)
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-std::pair<size_t, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_block_range(size_t block_idx) {
-	tbassert(block_idx < num_blocks, "block idx %lu\n", block_idx);
+inline std::pair<size_t, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_block_range(size_t block_idx) {
 	size_t block_start = blocks_start + block_idx * block_size;
 	size_t block_end = block_start + block_size;
+#if DEBUG
+	tbassert(block_idx < num_blocks, "block idx %lu\n", block_idx);
 	assert(block_start < N);
 	assert(block_end <= N);
+#endif
 	return {block_start, block_end};
 }
 
@@ -404,10 +428,13 @@ unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count
 }
 
 // flush the log to the blocks
+// precondition: log has been sorted
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_blocks(size_t max_to_flush) {
-	sort_log();
-
+#if DEBUG_PRINT
+	print();
+	printf("at beginning of flush, num elts total = %lu\n", num_elts_total);
+#endif
 	// dedup the log wrt the blocks, putting all new elts in log_to_flush
 	element_type log_to_flush[log_size];
 	unsigned short num_to_flush = 0;
@@ -424,12 +451,19 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 #endif
 
 		size_t block_idx = find_block_with_hint(key_to_flush, hint);
+#if DEBUG
 		assert(block_idx < num_blocks);
+#endif
 		// if it is in the header, update the header
 		if (blind_read_key(header_start + block_idx) == key_to_flush) {
 				copy_src_to_dest(i, header_start + block_idx);
+#if DEBUG_PRINT
+				printf("found duplicate in header idx %zu of elt %u\n", block_idx, key_to_flush);
+#endif
+				num_elts_total--;
 		} else {
 			// otherwise, look for it in the block
+			// TODO: update this to take in the block index because you already have it
 			auto update_block = update_in_block_if_exists(blind_read(i));
 			// block_idx = (update_block.second - blocks_start) / block_size; // floor div
 			// update hint 
@@ -445,13 +479,21 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 				log_to_flush[num_to_flush] = blind_read(i);
 				num_to_flush++;
 				num_to_flush_per_block[block_idx]++;
+			} else {
+#if DEBUG_PRINT
+				printf("found duplicate in block %u of elt %u\n", block_idx, key_to_flush);
+#endif
+				num_elts_total--;
 			}
 		}
 	}
 
 	// count the number of elements in each block
 	unsigned short count_per_block[num_blocks];
+
+	// TODO: merge these loops and count the rest in global redistribute
 	for (size_t i = 0; i < num_blocks; i++) {
+		// TODO: vectorize count_block by counting empty slots
 		count_per_block[i] = count_block(i);
 	}
 
@@ -498,7 +540,7 @@ std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts..
 // may return true if the element was already there due to it being a pseudo-set
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_type e) {
-	const key_type key = std::get<0>(e);
+	// const key_type key = std::get<0>(e);
 
 	/*
 	// if element is found in the data structure, update it
@@ -510,9 +552,12 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 	*/
 
 	// first try to update the key if it is in the log
+	// TODO: the simplest vectorized version looks in all of the cache lines in the log
+	// another vectorized version fills one cache line at a time
 	auto result = update_in_range_if_exists(0, num_elts_in_log, e);
 	if (result.first) { return false; }
 
+	/*
 	// then try to update the key in the blocks if it would be there / if there
 	// are elements in the blocks
 	if (get_min_block_key() != NULL_VAL && key >= get_min_block_key()) {
@@ -524,13 +569,14 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 		result = update_in_block_if_exists(e);
 		if (result.first) { return false; }
 	}
+	*/
 
 	// there should always be space in the log
 	assert(num_elts_in_log < log_size);
 
-	// if not bound, add it to the log
+	// if not found, add it to the log
 	blind_write(e, num_elts_in_log);
-	num_elts_total++;
+	num_elts_total++; // num elts (may be duplicates in log)
 	num_elts_in_log++;
 	
 	if (num_elts_in_log == log_size) { // we filled the log
@@ -558,6 +604,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 
 				// make min elt the new first header
 				copy_src_to_dest(0, header_start);
+				num_elts_total++;
 			}
 
 			// flush the log
@@ -582,18 +629,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 	return true;
 }
 
-
-
 // return N if not found, otherwise return the slot the key is at
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key_type e) {
-	// check the log
-	for(size_t i = 0; i < num_elts_in_log; i++) {
-		if(e == blind_read_key(i)) {
-			return i;
-		}
-	}
-
+size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index_in_blocks(key_type e) {
 	// if less than current min, should not be in ds
 	if (e < blind_read_key(header_start)) {
 		return N;
@@ -619,6 +657,22 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key
 		}
 	}
 	return N;
+}
+
+
+// return N if not found, otherwise return the slot the key is at
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key_type e) {
+	// check the log
+	// TODO: vectorize the search in the log
+	// replace it with the vectorized search update_if_exists
+	for(size_t i = 0; i < num_elts_in_log; i++) {
+		if(e == blind_read_key(i)) {
+			return i;
+		}
+	}
+
+	return get_index_in_blocks(e);
 }
 
 // return true iff element exists in the data structure
@@ -673,23 +727,45 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print() {
 }
 
 // apply the function F to the entire data structure
+// most general map function without inverse
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 template <bool no_early_exit, size_t... Is, class F>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
+	/*
 	// first do the flush
+	sort_log();
 	flush_log_to_blocks(num_elts_in_log);
 
 	// clear log
 	num_elts_in_log = 0;
 	clear_range(0, log_size);
+	*/
 
-	// now there should be only stuff in the rest of the DS
+	// read-only version of map
+	// for each elt in the log, search for it in the blocks
+	// if it was found in the blocks, add the index of it into the duplicates list
+	size_t dup_index[log_size];
+	size_t num_duplicates = 0;
+
+	for(size_t i = 0; i < num_elts_in_log; i++) {
+		key_type key = blind_read_key(i);
+		size_t idx = get_index_in_blocks(key);
+		if (idx < N) {
+			dup_index[num_duplicates] = idx;
+			num_duplicates++;
+		}
+	} 
+
   static_assert(std::is_invocable_v<decltype(&F::operator()), F &, uint32_t,
                                     NthType<Is>...>,
                 "update function must match given types");
 
-	// start from the header since we flushed the log
-  for (uint32_t i = log_size; i < N; i++) {
+  for (uint32_t i = 0; i < N; i++) {
+		// skip if duplicated
+		for(uint32_t j = 0; j < num_duplicates; j++) {
+			if(i == dup_index[j]) { continue; }
+		}
+
     auto index = get_key_array(i);
     if (index != NULL_VAL) {
       auto element =
@@ -707,9 +783,36 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
 }
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys() {
+uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_with_map() {
   uint64_t result = 0;
   map<true>([&](key_type key) { result += key; });
   return result;
 }
 
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_direct() {
+  uint64_t result = 0;
+
+	// read-only version of map
+	// for each elt in the log, search for it in the blocks
+	// if it was found in the blocks, add the index of it into the duplicates list
+	size_t dup_index[log_size];
+	size_t num_duplicates = 0;
+
+	for(size_t i = 0; i < num_elts_in_log; i++) {
+		key_type key = blind_read_key(i);
+		size_t idx = get_index_in_blocks(key);
+		if (idx < N) {
+			dup_index[num_duplicates] = idx;
+			num_duplicates++;
+		}
+	} 
+
+	for (size_t i = 0; i < N; i++) {
+		result += blind_read_key(i);
+	}
+	for(size_t i = 0; i < num_duplicates; i++) {
+		result -= blind_read_key(dup_index[i]);
+	}
+  return result;
+}
