@@ -268,7 +268,8 @@
 		return r;
 	}
 	printf("\n");
-
+	
+	/*
 	r = parallel_test_sorted_vector(el_count, num_copies);
 	if (r) {
 		return r;
@@ -279,6 +280,7 @@
 	if (r) {
 		return r;
 	}
+	*/
 	return 0;
 }
 

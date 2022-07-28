@@ -45,7 +45,7 @@ private:
 	static constexpr size_t blocks_start = log_size + header_size;
 
 	// counters
-	size_t num_elts_in_log = 0;
+	size_t num_inserts_in_log = 0;
 	size_t num_elts_total = 0;
 
 	// max elts allowed in data structure before split
@@ -333,6 +333,7 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_wi
 #if DEBUG
 	assert(key >= blind_read_key(i));
 #endif
+	// TODO: vectorize with leq vector instruction
 	for( ; i < blocks_start; i++) {
 		if(blind_read_key(i) == key)  {
 			return i - header_start;
@@ -376,7 +377,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_range(size
 // sort the log
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_log() {
-	sort_range(0, num_elts_in_log);
+	sort_range(0, num_inserts_in_log);
 }
 
 // given a range [start, end), look for elt e 
@@ -388,15 +389,34 @@ std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts..
 	size_t end, element_type e) {
 	const key_type key = std::get<0>(e);
 	size_t i = start;
+
+	// size_t location = end;
+	// bool found = false;
+
 	for(; i < end; i++) { // TODO: vectorize this for loop using AVX-512
 		// if found, update the val and return
+		/*
+		if (key == get_key_array(i) || get_key_array(i) == NULL_VAL) {
+			if (!found) { location = i; found = true; }
+		}
+		*/
+
+		
 		if (key == get_key_array(i)) {
 			update_val_at_index(e, i);
 			return {true, i};
 		} else if (get_key_array(i) == NULL_VAL) {
 			return {false, i};
 		}
+		
 	}
+	/*
+	if (location == end || get_key_array(location) == NULL_VAL) {
+		return {false, location};
+	} else {
+		return {true, location};
+	}
+	*/
 	return {false, end};
 } 
 
@@ -498,6 +518,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 	}
 
 	// if any of them overflow, redistribute
+	// TODO: can vectorize this part
 	for (size_t i = 0; i < num_blocks; i++) {
 		if (count_per_block[i] + num_to_flush_per_block[i] >= block_size) {
 #if DEBUG_PRINT
@@ -540,46 +561,23 @@ std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts..
 // may return true if the element was already there due to it being a pseudo-set
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_type e) {
-	// const key_type key = std::get<0>(e);
-
-	/*
-	// if element is found in the data structure, update it
-	size_t index = get_index(key);
-	if(index < N) {
-		blind_write(e, index);
-		return false;
-	}
-	*/
-
 	// first try to update the key if it is in the log
 	// TODO: the simplest vectorized version looks in all of the cache lines in the log
 	// another vectorized version fills one cache line at a time
-	auto result = update_in_range_if_exists(0, num_elts_in_log, e);
+	auto result = update_in_range_if_exists(0, num_inserts_in_log, e);
 	if (result.first) { return false; }
 
-	/*
-	// then try to update the key in the blocks if it would be there / if there
-	// are elements in the blocks
-	if (get_min_block_key() != NULL_VAL && key >= get_min_block_key()) {
-		// check if it matches any of the header
-		auto result = update_in_range_if_exists(log_size, log_size + header_size, e);
-		if (result.first) { return false; }
-
-		// then check if it is in the blocks
-		result = update_in_block_if_exists(e);
-		if (result.first) { return false; }
-	}
-	*/
-
+#if DEBUG
 	// there should always be space in the log
-	assert(num_elts_in_log < log_size);
+	assert(num_inserts_in_log < log_size);
+#endif
 
 	// if not found, add it to the log
-	blind_write(e, num_elts_in_log);
+	blind_write(e, num_inserts_in_log);
 	num_elts_total++; // num elts (may be duplicates in log)
-	num_elts_in_log++;
+	num_inserts_in_log++;
 	
-	if (num_elts_in_log == log_size) { // we filled the log
+	if (num_inserts_in_log == log_size) { // we filled the log
 		sort_log();
 
 		// if this is the first time we are flushing the log, just make the sorted log the header
@@ -615,7 +613,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 		}
 
 		// clear log
-		num_elts_in_log = 0;
+		num_inserts_in_log = 0;
 		clear_range(0, log_size);
 	}
 
@@ -627,6 +625,39 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 	}
 #endif
 	return true;
+}
+
+
+// return true if the element was deleted, false otherwise
+// may return false even if the elt is there due to it being a pseudo-set
+// return N if not found, otherwise return the slot the key is at
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type e) {
+	// if less than current min, should not be in ds
+	if (e < blind_read_key(header_start)) {
+		return N;
+	}
+	assert( e >= blind_read_key(header_start) );
+	size_t block_idx = find_block(e);
+#if DEBUG_PRINT
+	printf("\tin has, find block returned %lu\n", block_idx);
+#endif
+	// check the header
+	if (e == blind_read_key(header_start + block_idx)) {
+		return header_start + block_idx;
+	}
+	
+	// check the block
+	auto range = get_block_range(block_idx);
+	for(size_t i = range.first; i < range.second; i++) {
+		if (blind_read_key(i) == NULL_VAL) {
+			return N;
+		}
+		if (blind_read_key(i) == e) {
+			return i;
+		}
+	}
+	return N;
 }
 
 // return N if not found, otherwise return the slot the key is at
@@ -666,7 +697,7 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key
 	// check the log
 	// TODO: vectorize the search in the log
 	// replace it with the vectorized search update_if_exists
-	for(size_t i = 0; i < num_elts_in_log; i++) {
+	for(size_t i = 0; i < num_inserts_in_log; i++) {
 		if(e == blind_read_key(i)) {
 			return i;
 		}
@@ -731,23 +762,13 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print() {
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 template <bool no_early_exit, size_t... Is, class F>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
-	/*
-	// first do the flush
-	sort_log();
-	flush_log_to_blocks(num_elts_in_log);
-
-	// clear log
-	num_elts_in_log = 0;
-	clear_range(0, log_size);
-	*/
-
 	// read-only version of map
 	// for each elt in the log, search for it in the blocks
 	// if it was found in the blocks, add the index of it into the duplicates list
 	size_t dup_index[log_size];
 	size_t num_duplicates = 0;
 
-	for(size_t i = 0; i < num_elts_in_log; i++) {
+	for(size_t i = 0; i < num_inserts_in_log; i++) {
 		key_type key = blind_read_key(i);
 		size_t idx = get_index_in_blocks(key);
 		if (idx < N) {
@@ -760,14 +781,15 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
                                     NthType<Is>...>,
                 "update function must match given types");
 
+	// loop over all elts
   for (uint32_t i = 0; i < N; i++) {
-		// skip if duplicated
-		for(uint32_t j = 0; j < num_duplicates; j++) {
-			if(i == dup_index[j]) { continue; }
-		}
-
     auto index = get_key_array(i);
     if (index != NULL_VAL) {
+			// skip if duplicated
+			for(uint32_t j = 0; j < num_duplicates; j++) {
+				if(i == dup_index[j]) { continue; }
+			}
+
       auto element =
           SOA_type::template get_static<0, (Is + 1)...>(array.data(), N, i);
       if constexpr (no_early_exit) {
@@ -799,7 +821,7 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_di
 	size_t dup_index[log_size];
 	size_t num_duplicates = 0;
 
-	for(size_t i = 0; i < num_elts_in_log; i++) {
+	for(size_t i = 0; i < num_inserts_in_log; i++) {
 		key_type key = blind_read_key(i);
 		size_t idx = get_index_in_blocks(key);
 		if (idx < N) {
