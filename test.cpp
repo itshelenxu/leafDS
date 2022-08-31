@@ -270,7 +270,6 @@
 	}
 	printf("\n");
 	
-	/*
 	r = parallel_test_sorted_vector(el_count, num_copies);
 	if (r) {
 		return r;
@@ -281,8 +280,83 @@
 	if (r) {
 		return r;
 	}
-	*/
 	return 0;
+}
+
+[[nodiscard]] int insert_delete_templated(uint32_t el_count,
+                                            bool check = false) {
+
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds;
+  std::mt19937 rng(0);
+  std::uniform_int_distribution<key_type> dist_el(1, N * 16);
+
+  std::unordered_set<key_type> checker;
+	std::vector<key_type> elts;
+
+	// add some elements
+	for (uint32_t i = 0; i < el_count; i++) {
+    uint32_t el = dist_el(rng);
+		elts.push_back(el);
+		ds.insert(el);
+		if (check) {
+			checker.insert(el);
+			if (!ds.has(el)) {
+				ds.print();
+				printf("don't have something, %u, we inserted while inserting "
+							 "elements\n",
+							 el);
+				return -1;
+			}
+		}
+	} 
+
+	// then remove all the stuff we added
+	for (auto el : elts) {
+		ds.remove(el);
+		if (check) {
+			checker.erase(el);
+			if (ds.has(el)) {
+				ds.print();
+				printf("has %u but should have deleted\n", el);
+				return -1;
+			}
+		}
+	}
+
+	// check with sum
+	uint64_t sum = ds.sum_keys_with_map();
+	uint64_t sum_direct = ds.sum_keys_direct();
+
+	if (check) {
+		uint64_t correct_sum = 0;
+		for (auto elt : checker) {
+			correct_sum += elt;
+		}
+		printf("correct sum %lu\n", correct_sum);
+		if (correct_sum != sum) {
+			ds.print();
+			printf("incorrect sum keys with map\n");
+			tbassert(correct_sum == sum, "got sum %lu, should be %lu\n", sum, correct_sum);
+		}
+		if (correct_sum != sum_direct) {
+			ds.print();
+			printf("incorrect sum keys with subtraction\n");
+			tbassert(correct_sum == sum_direct, "got sum %lu, should be %lu\n", sum_direct, correct_sum);
+		}
+	}
+	printf("got sum %lu\n", sum);
+	printf("got sum direct %lu\n", sum_direct);
+  return 0;
+}
+
+
+[[nodiscard]] int insert_delete_test(uint32_t el_count, bool check = false) {
+  int r = 0;
+  r = insert_delete_templated(el_count, check);
+  if (r) {
+    return r;
+  }
+  return 0;
 }
 
 [[nodiscard]] int update_test_templated(uint32_t el_count,
@@ -314,9 +388,9 @@
 			}
 		} else {
 			bool present = ds.has(el);
-			if(present) { printf("removing elt %u in DS\n"); }
+			if(present) { printf("removing elt %u in DS\n", el); }
 			else {
-				printf("removing elt %u not in DS\n");
+				printf("removing elt %u not in DS\n", el);
 			}
 
       ds.remove(el);
@@ -506,6 +580,7 @@ int main(int argc, char *argv[]) {
     ("num_copies", "number of copies for parallel test", cxxopts::value<int>()->default_value( "100000"))
     ("v, verify", "verify the results of the test, might be much slower")
     ("update_test", "time updating")
+    ("insert_delete_test", "time updating")
 		("parallel_test", "time to do parallel test")
     ("update_values_test", "time updating with values");
     // ("help","Print help");
@@ -522,6 +597,9 @@ int main(int argc, char *argv[]) {
     return update_test(el_count, verify);
   }
 
+	if (result["insert_delete_test"].as<bool>()) {
+    return insert_delete_test(el_count, verify);
+  }
   if (result["update_values_test"].as<bool>()) {
     return update_values_test(el_count, verify);
   }
