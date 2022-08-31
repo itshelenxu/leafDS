@@ -3,8 +3,10 @@ VALGRIND?=0
 SANITIZE?=0
 CILK?=0
 
+#CXX=g++-11
+CXX=../OpenCilk-10.0.1-Linux/bin/clang++
 
-CFLAGS := -Wall -Wno-address-of-packed-member -Wextra -O$(OPT) -g  -std=c++20 -fmax-errors=1 -ftemplate-backtrace-limit=0 
+CFLAGS := -Wall -Wno-address-of-packed-member -Wextra -O$(OPT) -g  -std=c++20 -fmax-errors=1 -ftemplate-backtrace-limit=0 -DNDEBUG
 
 LDFLAGS := 
 
@@ -18,14 +20,16 @@ CFLAGS += -fsanitize=undefined,address -fno-omit-frame-pointer
 endif
 
 ifeq ($(OPT),3)
-CFLAGS += -fno-signed-zeros  -freciprocal-math -ffp-contract=fast -fno-trapping-math  -ffinite-math-only
+CFLAGS += -fno-signed-zeros  -freciprocal-math -ffp-contract=fast -fno-trapping-math  -ffinite-math-only 
 ifeq ($(VALGRIND),0)
-CFLAGS += -march=native #-static
+CFLAGS += -march=native
+# CFLAGS += -msse -msse2 -msse3 -mssse3 -mavx512f -mavx512cd
+#-msse -msse2 #-march=native #-static
 endif
 endif
 
 
-VERIFY_COUNT ?= 10000
+VERIFY_COUNT ?= 1000
 
 
 INCLUDES := leafDS.hpp 

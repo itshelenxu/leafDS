@@ -5,8 +5,8 @@
 #if CILK == 1
 #include <cilk/cilk.h>
 #include <cilk/cilk_api.h>
-#include <cilk/reducer_opadd.h>
-#include <cilk/reducer_opxor.h>
+// #include <cilk/reducer_opadd.h>
+// #include <cilk/reducer_opxor.h>
 #include <sstream>
 #include <iostream>
 #include <cstdlib>

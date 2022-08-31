@@ -1,5 +1,6 @@
 // main test driver for leafDS
 #define DEBUG 0
+#define DEBUG_PRINT 0
 
 #include "tbassert.h"
 #include "cxxopts.hpp"
@@ -290,29 +291,20 @@
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds;
   std::mt19937 rng(0);
   std::uniform_int_distribution<key_type> dist_el(1, N * 16);
-  // std::uniform_real_distribution<double> dist_flip(.25, .75);
+  std::uniform_real_distribution<double> dist_flip(.25, .75);
 
   std::unordered_set<key_type> checker;
 
 	for (uint32_t i = 0; i < el_count; i++) {
     // be more likely to insert when we are more empty
     uint32_t el = dist_el(rng);
-		// printf("inserting %u, num elts so far %lu\n", el, ds.get_num_elts());
-		// if (ds.has(el)) {
-	  //	printf("\t DS already has %u\n", el);
-		// }
-		ds.insert(el);
-		if (check) {
-			checker.insert(el);
-			if (!ds.has(el)) {
-				ds.print();
-				printf("don't have something, %u, we inserted while inserting "
-							 "elements\n",
-							 el);
-				return -1;
-			}
-			for(auto elt : checker) {
-				if(!ds.has(elt)) {
+
+		// if (dist_flip(rng) < ((double)(N - ds.get_num_elts()) / N)) {
+		if (dist_flip(rng) < 0.5) {
+			ds.insert(el);
+			if (check) {
+				checker.insert(el);
+				if (!ds.has(el)) {
 					ds.print();
 					printf("don't have something, %u, we inserted while inserting "
 								 "elements\n",
@@ -320,10 +312,47 @@
 					return -1;
 				}
 			}
+		} else {
+			bool present = ds.has(el);
+			if(present) { printf("removing elt %u in DS\n"); }
+			else {
+				printf("removing elt %u not in DS\n");
+			}
+
+      ds.remove(el);
+      if (check) {
+        checker.erase(el);
+        if (ds.has(el)) {
+					ds.print();
+          printf("have something we removed while removing elements, tried to "
+                 "remove %u\n",
+                 el);
+          return -1;
+        }
+      }
 		}
 	}
 
+	// for all elts in the checker set, make sure elt is in DS
+	if (check) {
+		for(auto elt : checker) {
+			if(!ds.has(elt)) {
+				ds.print();
+				printf("missing %u\n", elt);
+				return -1;
+			}
+		}
+		bool has_all = true;
+		ds.template map<true>([&has_all, &checker](uint32_t key) {
+			has_all &= checker.contains(key);
+		});
+		if (!has_all) {
+			printf("ds had something the checker didn't\n");
+			return -1;
+		}
+	}
 
+	// check with sum
 	uint64_t sum = ds.sum_keys_with_map();
 	uint64_t sum_direct = ds.sum_keys_direct();
 
@@ -345,65 +374,6 @@
 	}
 	printf("got sum %lu\n", sum);
 	printf("got sum direct %lu\n", sum_direct);
-/*
-  uint64_t start = get_usecs();
-  for (uint32_t i = 0; i < el_count; i++) {
-    // be more likely to insert when we are more empty
-    uint32_t el = dist_el(rng);
-    // printf("inserting %u\n", el);
-
-    if (dist_flip(rng) < ((double)(N - ds.get_num_elts()) / N)) {
-      // printf("inserting %u\n", el);
-      ds.insert(el);
-      if (check) {
-        checker.insert(el);
-        if (!ds.has(el)) {
-          ds.print();
-          printf("don't have something, %u, we inserted while inserting "
-                 "elements\n",
-                 el);
-          return -1;
-        }
-      }
-    } else {
-      // printf("removing %u\n", el);
-      ds.remove(el);
-      if (check) {
-        checker.erase(el);
-        if (ds.has(el)) {
-          printf("have something we removed while removing elements, tried to "
-                 "remove %u\n",
-                 el);
-          return -1;
-        }
-      }
-    }
-    if (check) {
-      if (ds.get_num_elts() != checker.size()) {
-        printf("wrong number of elements\n");
-        return -1;
-      }
-      for (auto el : checker) {
-        if (!ds.has(el)) {
-          ds.print_pma();
-          printf("we removed %u when we shouldn't have\n", el);
-          return -1;
-        }
-      }
-      bool has_all = true;
-      ds.template map<true>([&has_all, &checker](uint32_t key) {
-        has_all &= checker.contains(key);
-      });
-      if (!has_all) {
-        printf("ds had something the checker didn't\n");
-        return -1;
-      }
-    }
-    // ds.print_pma();
-  }
-  uint64_t end = get_usecs();
-  printf("took %lu micros\n", end - start);
-*/
   return 0;
 }
 
