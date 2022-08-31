@@ -925,7 +925,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::strip_deletes_a
 	 	log_end = num_inserts_in_log;
 		auto buffer_end = buffer_ptr;
 		buffer_ptr = 0;
-		auto out_ptr = 0;
+		size_t out_ptr = 0;
 		while(log_ptr < log_end && buffer_ptr < buffer_end) {
 			const key_type buffer_key = std::get<0>(buffer[buffer_ptr]);
 			const key_type log_key = blind_read_key(log_ptr);
@@ -1212,7 +1212,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
 
 	// map over insert log
 	for (uint32_t i = 0; i < num_inserts_in_log; i++) {
-    auto index = get_key_array(i);
+    // auto index = get_key_array(i);
 		assert(index != NULL_VAL);
 		auto element =
 				SOA_type::template get_static<0, (Is + 1)...>(array.data(), N, i);
@@ -1231,9 +1231,11 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
 		// skip over deletes
     if (index != NULL_VAL) {
 			// skip if duplicated
+			bool skip = false;
 			for(uint32_t j = 0; j < num_to_skip; j++) {
-				if(i == skip_index[j]) { continue; }
+				if(i == skip_index[j]) { skip = true; }
 			}
+			if(skip) { continue; }
 
       auto element =
           SOA_type::template get_static<0, (Is + 1)...>(array.data(), N, i);
@@ -1285,6 +1287,7 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_di
 	// do inserts
 	for (size_t i = 0; i < num_inserts_in_log; i++) {
 		result += blind_read_key(i);
+
 	}
 
 	for (size_t i = header_start; i < N; i++) {
