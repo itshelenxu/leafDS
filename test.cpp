@@ -367,6 +367,15 @@
 	return 0;
 }
 
+[[nodiscard]] int parallel_test_perf(uint32_t el_count, uint32_t num_copies, double prob_insert) {
+	int r = parallel_test_leafDS(el_count, num_copies, prob_insert);
+	if (r) {
+		return r;
+	}
+	printf("\n");
+	
+	return 0;
+}
 [[nodiscard]] int insert_delete_templated(uint32_t el_count,
                                             bool check = false) {
 
@@ -458,7 +467,8 @@
     uint32_t el = dist_el(rng);
 
 		// if (dist_flip(rng) < ((double)(N - ds.get_num_elts()) / N)) {
-		if (dist_flip(rng) < 0.5) {
+		if (dist_flip(rng) < 1.0) {
+			printf("inserting %u\n", el);
 			ds.insert(el);
 			if (check) {
 				checker.insert(el);
@@ -666,6 +676,7 @@ int main(int argc, char *argv[]) {
     ("update_test", "time updating")
     ("insert_delete_test", "time updating")
 		("parallel_test", "time to do parallel test")
+		("parallel_test_perf", "just leafDS copies for perf")
     ("update_values_test", "time updating with values");
     // ("help","Print help");
   // clang-format on
@@ -691,5 +702,10 @@ int main(int argc, char *argv[]) {
 	if (result["parallel_test"].as<bool>()) {
 		return parallel_test(el_count, num_copies, 1.0);
 	}
+
+	if (result["parallel_test_perf"].as<bool>()) {
+		return parallel_test_perf(el_count, num_copies, 1.0);
+	}
+
   return 0;
 }
