@@ -36,13 +36,13 @@ private:
 	static constexpr key_type NULL_VAL = {};
 
 	static constexpr size_t num_blocks = header_size;
-	static constexpr size_t N = 2*log_size + header_size + header_size * num_blocks;
+	static constexpr size_t N = log_size + header_size + header_size * num_blocks;
 
   static_assert(N != 0, "N cannot be 0");
 	
 	// start of each section
 	// insert and delete log
-	static constexpr size_t header_start = log_size * 2;
+	static constexpr size_t header_start = log_size;
 	static constexpr size_t blocks_start = header_start + header_size;
 
 	// counters
@@ -79,6 +79,8 @@ private:
 
 	void copy_src_to_dest(size_t src, size_t dest);
 	void flush_log_to_blocks(size_t max_to_flush);
+	void flush_deletes_to_blocks();
+
 	void sort_log();
 	void sort_range(size_t start_idx, size_t end_idx);
 	inline std::pair<size_t, size_t> get_block_range(size_t block_idx);
@@ -96,7 +98,6 @@ private:
 	bool delete_from_header();
 
 	void strip_deletes_and_redistrib();
-	void flush_deletes_to_blocks();
   void delete_from_block_if_exists(key_type e, size_t block_idx);
 
 	// given a buffer of n elts, spread them evenly in the blocks
@@ -689,22 +690,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 		return false; 
 	}
 
-	// also check if it is in deletes
-	for(size_t i = log_size; i < log_size + num_deletes_in_log; i++) {
-		// cancel out the delete and shift everyone left if we found it
-		// TODO: make this a function (shift left)
-		if(blind_read_key(i) == std::get<0>(e)) {
-			for(size_t j = i; j < log_size + num_deletes_in_log -1; j++) {
-				SOA_type::get_static(array.data(), N, j) = SOA_type::get_static(array.data(), N, j+1);
-			}
-			clear_range(log_size + num_deletes_in_log - 1, log_size + num_deletes_in_log);
-			num_deletes_in_log--;
-		}
-	}
-
 #if DEBUG
 	// there should always be space in the log
-	assert(num_inserts_in_log < log_size);
+	assert(num_inserts_in_log + num_deletes_in_log < log_size);
 #endif
 
 	// if not found, add it to the log
@@ -712,25 +700,37 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 	num_elts_total++; // num elts (may be duplicates in log and block)
 	num_inserts_in_log++;
 	
-	if (num_inserts_in_log == log_size) { // we filled the log
-		sort_log();
+	if (num_inserts_in_log + num_deletes_in_log == log_size) { // we filled the log
+		sort_range(0, num_inserts_in_log); // sort inserts
 
 		// if this is the first time we are flushing the log, just make the sorted log the header
 		if (get_min_block_key() == 0) {
-#if DEBUG_PRINT
-			printf("\nmake sorted log the header\n");
-			print();
-#endif
+			if (num_deletes_in_log > 0) { // if we cannot fill the header
+				clear_range(num_inserts_in_log, log_size); // clear deletes
+				num_deletes_in_log = 0;
+				return true;
+			} else {
+	#if DEBUG_PRINT
+				printf("\nmake sorted log the header\n");
+				print();
+	#endif
 
-			for(size_t i = 0; i < log_size; i++) {
-		    SOA_type::get_static(array.data(), N, i + header_start) =
-	        SOA_type::get_static(array.data(), N, i);
+				for(size_t i = 0; i < log_size; i++) {
+					SOA_type::get_static(array.data(), N, i + header_start) =
+						SOA_type::get_static(array.data(), N, i);
+				}
 			}
 		} else { // otherwise, there are some elements in the block / header part
+#if DEBUG
+			assert(num_inserts_in_log > 0);
+#endif
+			if(num_deletes_in_log > 0) {
+				sort_range(num_inserts_in_log, log_size); // sort deletes
+			}
 			// if inserting min, swap out the first header into the first block
 			if (blind_read_key(0) < get_min_block_key()) {
 
-#if DEBUG==1
+#if DEBUG
 		    size_t i = blocks_start;
 				for(; i < blocks_start + block_size; i++) {
 					if (blind_read_key(i) == 0) {
@@ -740,15 +740,19 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 #endif
 				
 				size_t j = blocks_start + block_size;
+				// find the first zero slot in the block
 				// TODO: this didn't work (didn't find the first zero)
 				SOA_type::template map_range_with_index_static(array.data(), N, [&j](auto index, auto key) {
 					if (key == 0) {
 						j = std::min(index, j);
 					}
 				}, blocks_start, blocks_start + block_size);
+#if DEBUG
 				tbassert(i == j, "got %u, should be %u\n", j, i);
 				assert(i < blocks_start + block_size);
+#endif
 
+				// put the old min header in the block where it belongs
 				// src = header start, dest = i
 				copy_src_to_dest(header_start, j);
 
@@ -761,7 +765,11 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 			// note: at this point, the min key is repeated in the
 			// header and log (if there was a new min).  in the flush, it will just
 			// get deduped
-			flush_log_to_blocks(log_size);
+			// TODO: first flush the deletes
+			if (num_deletes_in_log > 0) {
+				flush_deletes_to_blocks();
+			}
+			flush_log_to_blocks(num_inserts_in_log);
 		}
 
 		// clear log
@@ -828,7 +836,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_deletes_t
 		// try to delete it from the blocks if it exists
 		delete_from_block_if_exists(key_to_delete, block_idx);
 
-		if (hint < block_idx ) { hint = block_idx; }
+		if (hint < block_idx) { hint = block_idx; }
 	}
 
 	// clear delete log
@@ -1011,8 +1019,10 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::delete_from_hea
 // TODO: what if key_type is not elt_type? do you make a fake elt?
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type e) {
-	assert(num_deletes_in_log < log_size);
-	assert(num_inserts_in_log < log_size);
+
+#if DEBUG
+	assert(num_deletes_in_log + num_inserts_in_log < log_size);
+#endif
 
 	// check if the element is in the insert log
 	bool was_insert = false;
@@ -1027,7 +1037,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 			for(size_t j = i; j < num_inserts_in_log - 1; j++) {
 				SOA_type::get_static(array.data(), N, j) = SOA_type::get_static(array.data(), N, j+1); 
 			}
-			clear_range(num_inserts_in_log - 1, log_size);
+			clear_range(num_inserts_in_log - 1, num_inserts_in_log);
 			num_inserts_in_log--;
 			break;
 		}
@@ -1035,18 +1045,18 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 
 	// if it was not an insert, look through the delete log for it
 	if(!was_insert) {
-		auto result = find_key_in_range(log_size, log_size + num_deletes_in_log, e);
+		auto result = find_key_in_range(num_inserts_in_log, num_deletes_in_log, e);
 		if (!result.first) { // if not in delete log, add it
-			blind_write(e, log_size + num_deletes_in_log);
 			num_deletes_in_log++;
+			blind_write(e, log_size - num_deletes_in_log); // grow left
 		}
 	} else { // otherwise, just add it to the delete log
-		blind_write(e, log_size + num_deletes_in_log);
 		num_deletes_in_log++;
+		blind_write(e, log_size - num_deletes_in_log);
 	}
 
 	// now check if the log is full
-	if (num_deletes_in_log == log_size) {
+	if (num_deletes_in_log + num_inserts_in_log == log_size) {
 		// if the header is empty, the deletes just disappear
 		// only do the flushing if there is stuff later in the DS
 		if (get_min_block_key() != 0) {
@@ -1060,9 +1070,10 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 			} else {
 				flush_deletes_to_blocks();
 			}
-		} 
+		}
+
+		clear_range(log_size - num_deletes_in_log, log_size);
 		num_deletes_in_log = 0;
-		clear_range(log_size, 2 * log_size);
 	}
 	return true; // ?
 }
@@ -1154,17 +1165,16 @@ template <size_t log_size, size_t header_size, size_t block_size, typename key_t
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print() {
   auto num_elts = count_up_elts();
 	printf("total num elts %lu\n", num_elts);
+	printf("num inserts in log = %lu\n", num_inserts_in_log);
+  printf("num deletes in log = %lu\n", num_deletes_in_log);
   SOA_type::print_type_details();
 
 	if (num_elts == 0) {
     printf("the ds is empty\n");
   }
 
-	printf("\ninsert log: \n");
+	printf("\nlog: \n");
 	print_range(0, log_size);
-	
-	printf("\ndelete log: \n");
-	print_range(log_size, 2*log_size);
 
 	printf("\nheaders:\n");
 	print_range(header_start, blocks_start);
@@ -1213,7 +1223,6 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
 	// map over insert log
 	for (uint32_t i = 0; i < num_inserts_in_log; i++) {
     // auto index = get_key_array(i);
-		assert(index != NULL_VAL);
 		auto element =
 				SOA_type::template get_static<0, (Is + 1)...>(array.data(), N, i);
 		if constexpr (no_early_exit) {
