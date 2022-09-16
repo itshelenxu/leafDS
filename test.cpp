@@ -1,5 +1,5 @@
 // main test driver for leafDS
-#define DEBUG 0
+// #define DEBUG 0
 #define DEBUG_PRINT 0
 
 #include "tbassert.h"

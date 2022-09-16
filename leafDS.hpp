@@ -11,6 +11,35 @@
 #include <iostream>
 #include <tuple>
 #include <type_traits>
+#include <immintrin.h>
+
+#if DEBUG==1
+#define ASSERT(PREDICATE, ...)                                                 \
+  do {                                                                         \
+    if (!(PREDICATE)) {                                                        \
+      fprintf(stderr,                                                          \
+              "%s:%d (%s) Assertion " #PREDICATE " failed: ", __FILE__,        \
+              __LINE__, __PRETTY_FUNCTION__);                                  \
+      fprintf(stderr, __VA_ARGS__);                                            \
+      abort();                                                                 \
+    }                                                                          \
+  } while (0)
+#else
+#define ASSERT(PREDICATE, ...)                                                 
+#endif
+
+
+static uint64_t one[128] = {
+  1ULL << 0, 1ULL << 1, 1ULL << 2, 1ULL << 3, 1ULL << 4, 1ULL << 5, 1ULL << 6, 1ULL << 7, 1ULL << 8, 1ULL << 9,
+  1ULL << 10, 1ULL << 11, 1ULL << 12, 1ULL << 13, 1ULL << 14, 1ULL << 15, 1ULL << 16, 1ULL << 17, 1ULL << 18, 1ULL << 19, 
+  1ULL << 20, 1ULL << 21, 1ULL << 22, 1ULL << 23, 1ULL << 24, 1ULL << 25, 1ULL << 26, 1ULL << 27, 1ULL << 28, 1ULL << 29, 
+  1ULL << 30, 1ULL << 31, 1ULL << 32, 1ULL << 33, 1ULL << 34, 1ULL << 35, 1ULL << 36, 1ULL << 37, 1ULL << 38, 1ULL << 39, 
+  1ULL << 40, 1ULL << 41, 1ULL << 42, 1ULL << 43, 1ULL << 44, 1ULL << 45, 1ULL << 46, 1ULL << 47, 1ULL << 48, 1ULL << 49, 
+  1ULL << 50, 1ULL << 51, 1ULL << 52, 1ULL << 53, 1ULL << 54, 1ULL << 55, 1ULL << 56, 1ULL << 57, 1ULL << 58, 1ULL << 59, 
+  1ULL << 60, 1ULL << 61, 1ULL << 62, 1ULL << 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+
+enum range_type {INSERTS, DELETES, BLOCK};
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 class LeafDS {
@@ -38,6 +67,7 @@ private:
 	static constexpr size_t num_blocks = header_size;
 	static constexpr size_t N = log_size + header_size + header_size * num_blocks;
 
+
   static_assert(N != 0, "N cannot be 0");
 	
 	// start of each section
@@ -60,7 +90,7 @@ private:
         SOA_type::template get_static<0>(array.data(), N, index));
   }
 
-	size_t count_up_elts() {
+	size_t count_up_elts() const {
 		size_t result = 0;
 		for(size_t i = 0; i < N; i++) {
 			result += (blind_read_key(i) != NULL_VAL);
@@ -68,12 +98,13 @@ private:
 		return result;
 	}
 
+
 	// private helpers
 	void update_val_at_index(element_type e, size_t index);
 	void place_elt_at_index(element_type e, size_t index);
 	void clear_range(size_t start, size_t end);
-	size_t find_block(key_type key);
-	size_t find_block_with_hint(key_type key, size_t hint);
+	size_t find_block(key_type key) const;
+	size_t find_block_with_hint(key_type key, size_t hint) const;
 	void global_redistribute(element_type* log_to_flush, size_t num_to_flush, unsigned short* count_per_block);
 	void global_redistribute_blocks(unsigned short* count_per_block);
 
@@ -83,16 +114,18 @@ private:
 
 	void sort_log();
 	void sort_range(size_t start_idx, size_t end_idx);
-	inline std::pair<size_t, size_t> get_block_range(size_t block_idx);
-	std::pair<bool, size_t> update_in_range_if_exists(size_t start, size_t end, element_type e);
-	std::pair<bool, size_t> find_key_in_range(size_t start, size_t end, key_type e);
-	std::pair<bool, size_t> update_in_block_if_exists(element_type e);
-	std::pair<bool, size_t> update_in_block_if_exists(element_type e, size_t block_idx);
-
-	unsigned short count_block(size_t block_idx);
-	void print_range(size_t start, size_t end);
+	inline std::pair<size_t, size_t> get_block_range(size_t block_idx) const;
 	
-	void advance_block_ptr(size_t* blocks_ptr, size_t* cur_block, size_t* start_of_cur_block, unsigned short* count_per_block);
+	template <range_type type>
+	bool update_in_range_if_exists(size_t start, size_t end, element_type e);
+	std::pair<bool, size_t> find_key_in_range(size_t start, size_t end, key_type e) const;
+	bool update_in_block_if_exists(element_type e);
+	bool update_in_block_if_exists(element_type e, size_t block_idx);
+
+	unsigned short count_block(size_t block_idx) const;
+	void print_range(size_t start, size_t end) const;
+	
+	void advance_block_ptr(size_t* blocks_ptr, size_t* cur_block, size_t* start_of_cur_block, unsigned short* count_per_block) const;
 
 	// delete helpers
 	bool delete_from_header();
@@ -105,13 +138,13 @@ private:
 
 public:
 	size_t get_num_elts() const { return num_elts_total; }
-	bool is_full() { return num_elts_total >= max_density; }
-	void print();
+	bool is_full() const { return num_elts_total >= max_density; }
+	void print() const;
 
-	[[nodiscard]] uint64_t sum_keys();
-	[[nodiscard]] uint64_t sum_keys_with_map();
-	[[nodiscard]] uint64_t sum_keys_direct();
-	template <bool no_early_exit, size_t... Is, class F> bool map(F f);
+	[[nodiscard]] uint64_t sum_keys() const;
+	[[nodiscard]] uint64_t sum_keys_with_map() const;
+	[[nodiscard]] uint64_t sum_keys_direct() const;
+	template <bool no_early_exit, size_t... Is, class F> bool map(F f) const;
 	// main top-level functions
 	// given a key, return the index of the largest elt at least e
 	[[nodiscard]] uint32_t search(key_type e) const;
@@ -123,19 +156,19 @@ public:
   bool remove(key_type e);
 
 	// whether elt e was in the DS
-  [[nodiscard]] bool has(key_type e);
+  [[nodiscard]] bool has(key_type e) const;
 
-  [[nodiscard]] size_t get_index_in_blocks(key_type e);
+  [[nodiscard]] size_t get_index_in_blocks(key_type e) const;
 
 	// index of element e in the DS, N if not found
-  [[nodiscard]] size_t get_index(key_type e);
+  [[nodiscard]] size_t get_index(key_type e) const;
 
   auto blind_read_key(uint32_t index) const {
     return std::get<0>(SOA_type::get_static(array.data(), N, index));
   }
 
 	// min block header is the first elt in the header part
-	auto get_min_block_key() {
+	auto get_min_block_key() const {
 		return blind_read_key(header_start);
   }
 
@@ -143,7 +176,7 @@ public:
     SOA_type::get_static(array.data(), N, index) = e;
   }
 
-  auto blind_read(uint32_t index) {
+  auto blind_read(uint32_t index) const {
     return SOA_type::get_static(array.data(), N, index);
   }
 };
@@ -366,13 +399,13 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 
 // return index of the block that this elt would fall in
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block(key_type key) {
+size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block(key_type key) const {
 	return find_block_with_hint(key, 0);
 }
 
 // return index of the block that this elt would fall in
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_with_hint(key_type key, size_t hint) {
+size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_with_hint(key_type key, size_t hint) const {
 	size_t i = header_start + hint;
 #if DEBUG
 	assert(key >= blind_read_key(i));
@@ -395,7 +428,6 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_wi
 		}
 	}
 	assert(i - header_start - 1 < num_blocks);
-	
 	assert(i - header_start - 1 == ret);
 	// printf("elt %lu, original found %lu, new is %lu\n", key, i - header_start - 1, ret);
 #endif
@@ -436,43 +468,163 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_log() {
 	sort_range(0, num_inserts_in_log);
 }
 
+// 64 bytes per cache line / 4 bytes per elt = 16-bit vector
+// wherever there is a match, it will set those bits
+static inline __mmask16 slot_mask_32(uint8_t * array, uint32_t key) {
+  __m512i bcast = _mm512_set1_epi32(key);
+  __m512i block = _mm512_loadu_si512((const __m512i *)(array));
+  return _mm512_cmp_epi32_mask(bcast, block, _MM_CMPINT_EQ);
+}
+
+static inline __mmask8 slot_mask_64(uint8_t * array, uint64_t key) {
+  __m512i bcast = _mm512_set1_epi64(key);
+  __m512i block = _mm512_loadu_si512((const __m512i *)(array));
+  return _mm512_cmp_epi64_mask(bcast, block, _MM_CMPINT_EQ);
+}
+
+
+// if you expect at most 1 occurrence, use compare to 0
+// then use tzcnt to tell you the index of the first 1
+
+// if you could possibly have more than 1 match:
+// use popcount to tell you how many matches there are
+// __builtin_popcountll(mask64)
+// if yes, use select to find the index
+static inline uint8_t word_select(uint64_t val, int rank) {
+  val = _pdep_u64(one[rank], val);
+  return _tzcnt_u64(val);
+}
+
+uint16_t get_left_mask(size_t start) {
+	assert(start < 16);
+
+	uint16_t mask = 0xFFFF;
+	mask <<= start;
+	mask >>= start;
+	return mask;
+
+	// TODO: can precompute the masks
+}
+
+uint16_t get_right_mask(size_t end) {
+	assert(end < 16);
+
+	uint16_t mask = 0xFFFF;
+	mask >>= end;
+	mask <<= end;
+	return mask;
+
+	// TODO: can precompute the masks
+}
+
 // given a range [start, end), look for elt e 
 // if e is in the range, update it and return true
 // otherwise return false
 // also return index found or index stopped at
+
+
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range_if_exists(size_t start,
+template <range_type type>
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range_if_exists(size_t start,
 	size_t end, element_type e) {
+
+	[[maybe_unused]] bool correct_answer = false;
+	[[maybe_unused]] size_t test_i = start;
+#if DEBUG
 	const key_type key = std::get<0>(e);
-	size_t i = start;
 
-	// size_t location = end;
-	// bool found = false;
-
-	for(; i < end; i++) { // TODO: vectorize this for loop using AVX-512
-		// if found, update the val and return
-		/*
-		if (key == get_key_array(i) || get_key_array(i) == NULL_VAL) {
-			if (!found) { location = i; found = true; }
+	for(; test_i < end; test_i++) { // TODO: vectorize this for loop using AVX-512
+		if (key == get_key_array(test_i)) {
+			// update_val_at_index(e, test_i);
+			correct_answer = true;
+			break;
+		} else if (get_key_array(test_i) == NULL_VAL) {
+			correct_answer = false;
+			break;
 		}
-		*/
-		
-		if (key == get_key_array(i)) {
+	}
+	// correct_answer = false;
+#endif
+	if constexpr (type == BLOCK) {
+		assert(start % 16 == 0);
+		assert(end % 16 == 0);
+	
+		for(size_t vector_start = start; vector_start < end; vector_start += 16) {
+			auto mask = slot_mask_32(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
+			if (mask > 0) {
+				auto i = vector_start + _tzcnt_u64(mask);
+
+				assert(test_i == i);
+				assert((correct_answer == true));
+
+				update_val_at_index(e, i);
+				return true;
+			}
+		}
+		return false;
+	} 
+
+	// if you are in the log
+	size_t vector_start = start & ~(15u);
+	size_t vector_end = (end + 15) & ~(15u);
+
+	auto mask = slot_mask_32(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
+	
+	if constexpr (type == DELETES) {
+		uint16_t left_mask = get_left_mask(start % 16);
+		mask &= left_mask;
+		if (mask > 0) {
+			auto idx = vector_start + _tzcnt_u64(mask); // check if there is an off-by-1 in tzcnt
+
+			ASSERT(test_i == idx, "test_i = %zu, i = %llu, mask = %d\n", test_i, idx, mask);
+			assert((correct_answer == true));
+
+			update_val_at_index(e, idx);
+			return true;
+		}
+		vector_start += 16;
+	}
+	
+	if (vector_end < 16) {
+		assert((correct_answer == false));
+		return false;
+	}
+
+	// do blocks or any full blocks of the log
+	// will miss the last full block, if there is one
+	while(vector_start + 16 <= end) {
+		auto mask = slot_mask_32(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
+		if (mask > 0) {
+			auto i = vector_start + _tzcnt_u64(mask);
+
+			assert(test_i == i);
+			assert((correct_answer == true));
+
 			update_val_at_index(e, i);
-			return {true, i};
-		} else if (get_key_array(i) == NULL_VAL) {
-			return {false, i};
+			return true;
 		}
-		
+		vector_start += 16;
 	}
-	/*
-	if (location == end || get_key_array(location) == NULL_VAL) {
-		return {false, location};
-	} else {
-		return {true, location};
+
+	// do the remaining ragged right, if there is any.
+	if constexpr (type == INSERTS) {
+		if (vector_start < end) { // this is not exactly optimal, TBD how to remove it
+			uint16_t right_mask = get_right_mask(end % 16);
+			mask = slot_mask_32(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
+			mask &= right_mask;
+
+			if (mask > 0) {
+				auto i = vector_start + _tzcnt_u64(mask);
+				assert(test_i == i);
+				update_val_at_index(e, i);
+				assert((correct_answer == true));
+				return true;
+			}
+		}
 	}
-	*/
-	return {false, end};
+
+	assert((correct_answer == false));
+	return false;
 } 
 
 
@@ -482,7 +634,7 @@ std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts..
 // also return index found or index stopped at
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_key_in_range(size_t start,
-	size_t end, key_type key) {
+	size_t end, key_type key) const {
 	size_t i = start;
 
 
@@ -501,7 +653,7 @@ std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts..
 
 // given a block index, return its range [start, end)
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-inline std::pair<size_t, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_block_range(size_t block_idx) {
+inline std::pair<size_t, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_block_range(size_t block_idx) const {
 	size_t block_start = blocks_start + block_idx * block_size;
 	size_t block_end = block_start + block_size;
 #if DEBUG
@@ -514,7 +666,7 @@ inline std::pair<size_t, size_t> LeafDS<log_size, header_size, block_size, key_t
 
 // count up the number of elements in this b lock
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count_block(size_t block_idx) {
+unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count_block(size_t block_idx) const {
 	size_t block_start = blocks_start + block_idx * block_size;
 	size_t block_end = block_start + block_size;
 
@@ -572,7 +724,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 
 			// if it was in the block, do nothing bc we have already updated it
 			// if not found, add to the deduped log_to_flush
-			if (!update_block.first) {
+			if (!update_block) {
 				// if not found, the second thing in the pair is the index at the end
 #if DEBUG_PRINT
 				printf("\tflushing elt %u to block %lu, header %u\n", blind_read_key(i), block_idx, blind_read_key(header_start + block_idx));
@@ -596,6 +748,8 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 	// TODO: merge these loops and count the rest in global redistribute
 	for (size_t i = 0; i < num_blocks; i++) {
 		// TODO: vectorize count_block by counting empty slots
+		// set the key to 0 and do popcount to count the zeroes
+		// subtract from total slots
 		count_per_block[i] = count_block(i);
 	}
 
@@ -638,18 +792,18 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 }
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_block_if_exists(element_type e) {
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_block_if_exists(element_type e) {
 	const key_type key = std::get<0>(e);
 	// if key is in the current range of this node, try to find it in the block
 	auto block_idx = find_block(key);
 	auto block_range = get_block_range(block_idx);
 	// if found, update and return
-	return update_in_range_if_exists(block_range.first, block_range.second, e);
+	return update_in_range_if_exists<BLOCK>(block_range.first, block_range.second, e);
 }
 
 // take in the block idx
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_block_if_exists(element_type e, size_t block_idx) {
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_block_if_exists(element_type e, size_t block_idx) {
 	// if key is in the current range of this node, try to find it in the block
 	auto block_range = get_block_range(block_idx);
 	// if found, update and return
@@ -685,8 +839,8 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 	// first try to update the key if it is in the log
 	// TODO: the simplest vectorized version looks in all of the cache lines in the log
 	// another vectorized version fills one cache line at a time
-	auto result = update_in_range_if_exists(0, num_inserts_in_log, e);
-	if (result.first) { 
+	auto result = update_in_range_if_exists<INSERTS>(0, num_inserts_in_log, e);
+	if (result) { 
 		return false; 
 	}
 
@@ -748,7 +902,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 					}
 				}, blocks_start, blocks_start + block_size);
 #if DEBUG
-				tbassert(i == j, "got %u, should be %u\n", j, i);
+				tbassert(i == j, "got %zu, should be %zu\n", j, i);
 				assert(i < blocks_start + block_size);
 #endif
 
@@ -782,7 +936,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-inline void LeafDS<log_size, header_size, block_size, key_type, Ts...>::advance_block_ptr(size_t* blocks_ptr, size_t* cur_block, size_t* start_of_cur_block, unsigned short* count_per_block) {
+inline void LeafDS<log_size, header_size, block_size, key_type, Ts...>::advance_block_ptr(size_t* blocks_ptr, size_t* cur_block, size_t* start_of_cur_block, unsigned short* count_per_block) const {
 #if DEBUG_PRINT
 		if (blind_read_key(*blocks_ptr) == NULL_VAL) {
 			printf("null blocks ptr %lu\n", blocks_ptr);
@@ -812,7 +966,7 @@ inline void LeafDS<log_size, header_size, block_size, key_type, Ts...>::advance_
 			(*blocks_ptr)++;
 		}
 #if DEBUG
-		assert(prev_blocks_ptr != blocks_ptr); // made sure we advanced
+		assert(prev_blocks_ptr != *blocks_ptr); // made sure we advanced
 #endif
 }
 
@@ -1080,7 +1234,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 
 // return N if not found, otherwise return the slot the key is at
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index_in_blocks(key_type e) {
+size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index_in_blocks(key_type e) const {
 	// if less than current min, should not be in ds
 	if (e < blind_read_key(header_start)) {
 		return N;
@@ -1111,7 +1265,7 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index_in_
 
 // return N if not found, otherwise return the slot the key is at
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key_type e) {
+size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key_type e) const {
 	// check the log
 	// TODO: vectorize the search in the log
 	// replace it with the vectorized search update_if_exists
@@ -1126,7 +1280,7 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key
 
 // return true iff element exists in the data structure
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::has(key_type e) {
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::has(key_type e) const {
 	// first check if it is in the delete log
 	for(size_t i = log_size; i < log_size + num_deletes_in_log; i++) {
 		if(blind_read_key(i) == e) {
@@ -1140,7 +1294,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::has(key_type e)
 
 // print the range [start, end)
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print_range(size_t start, size_t end) {
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print_range(size_t start, size_t end) const {
 	SOA_type::map_range_with_index_static(
 			(void *)array.data(), N,
 			[](size_t index, key_type key, auto... args) {
@@ -1162,7 +1316,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print_range(siz
 
 // print the entire thing
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print() {
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print() const {
   auto num_elts = count_up_elts();
 	printf("total num elts %lu\n", num_elts);
 	printf("num inserts in log = %lu\n", num_inserts_in_log);
@@ -1190,7 +1344,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print() {
 // most general map function without inverse
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 template <bool no_early_exit, size_t... Is, class F>
-bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) const {
 	// read-only version of map
 	// for each elt in the log, search for it in the blocks
 	// if it was found in the blocks, add the index of it into the duplicates list
@@ -1261,14 +1415,14 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) {
 }
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_with_map() {
+uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_with_map() const {
   uint64_t result = 0;
   map<true>([&](key_type key) { result += key; });
   return result;
 }
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_direct() {
+uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_direct() const {
   uint64_t result = 0;
 
 	size_t skip_index[2*log_size];

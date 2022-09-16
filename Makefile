@@ -2,14 +2,18 @@ OPT?=3
 VALGRIND?=0
 SANITIZE?=0
 CILK?=0
+DEBUG?=0
 
 #CXX=g++-11
 CXX=../OpenCilk-10.0.1-Linux/bin/clang++
 
-CFLAGS := -Wall -Wno-address-of-packed-member -Wextra -O$(OPT) -g  -std=c++20 -fmax-errors=1 -ftemplate-backtrace-limit=0 -DNDEBUG
+CFLAGS := -Wall -Wno-address-of-packed-member -Wextra -O$(OPT) -gdwarf-4  -std=c++20 -ftemplate-backtrace-limit=0 -DDEBUG=$(DEBUG)
 
 LDFLAGS := 
 
+ifeq ($(DEBUG),0)
+CFLAGS += -DNDEBUG
+endif
 ifeq ($(CILK),1)
 CXX=clang++
 CFLAGS += -fcilkplus -DCILK=1
@@ -21,13 +25,13 @@ endif
 
 ifeq ($(OPT),3)
 CFLAGS += -fno-signed-zeros  -freciprocal-math -ffp-contract=fast -fno-trapping-math  -ffinite-math-only 
+endif
+
 ifeq ($(VALGRIND),0)
 CFLAGS += -march=native
 # CFLAGS += -msse -msse2 -msse3 -mssse3 -mavx512f -mavx512cd
 #-msse -msse2 #-march=native #-static
 endif
-endif
-
 
 VERIFY_COUNT ?= 1000
 
