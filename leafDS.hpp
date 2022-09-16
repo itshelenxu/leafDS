@@ -652,6 +652,7 @@ std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts..
 
 
 // given a block index, return its range [start, end)
+// TODO: precompute this in a table
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 inline std::pair<size_t, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_block_range(size_t block_idx) const {
 	size_t block_start = blocks_start + block_idx * block_size;
