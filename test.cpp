@@ -101,30 +101,67 @@
 	std::vector<uint64_t> insert_times(NUM_TRIALS);
 	std::vector<uint64_t> sum_times_with_map(NUM_TRIALS);
 	std::vector<uint64_t> sum_times_direct(NUM_TRIALS);
+	std::vector<uint32_t> elts;
+	// prefill the input
+	std::uniform_int_distribution<uint32_t> dist_el(1, 1088 * 16);
+	std::mt19937 rng(0);
+	for (uint32_t j = 0; j < el_count; j++) {
+		uint32_t el = dist_el(rng);
+		elts.push_back(el);
+	}
 
 	uint64_t start, end;
 	for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
 		// do inserts
 		std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, uint32_t>> dsv(num_copies);
-		start = get_usecs();
+
+		// add the first half
 		cilk_for(uint32_t i = 0; i < num_copies; i++) {
-			std::mt19937 rng(0);
-			std::uniform_int_distribution<uint32_t> dist_el(1, N * 16);
   		std::uniform_real_distribution<double> dist_flip(.25, .75);
 
-			for (uint32_t j = 0; j < el_count; j++) {
+			for (uint32_t j = 0; j < el_count / 2; j++) {
+				uint32_t el = elts[j];
+				dsv[i].insert(el);
+				/*
+				if (dist_flip(rng) < prob_insert) {
+					dsv[i].insert(el);
+				} else {
+					dsv[i].remove(el);
+				}
+				*/
+			}
+		}
+#if STATS
+		printf("first half:\n");
+		dsv[0].report_redistributes();
+#endif
+
+		// time the second half
+		start = get_usecs();
+		cilk_for(uint32_t i = 0; i < num_copies; i++) {
+  		std::uniform_real_distribution<double> dist_flip(.25, .75);
+
+			for (uint32_t j = el_count / 2; j < el_count; j++) {
+				uint32_t el = elts[j];
+				dsv[i].insert(el);
+				/*
 				uint32_t el = dist_el(rng);
 				if (dist_flip(rng) < prob_insert) {
 					dsv[i].insert(el);
 				} else {
 					dsv[i].remove(el);
 				}
+				*/
 			}
 		}
 		end = get_usecs();
 		if (trial > 0) {
 			insert_times[trial - 1] = end - start;
 		}
+#if STATS
+		printf("all:\n");
+		dsv[0].report_redistributes();
+#endif
 
 		// do sum
 		std::vector<uint64_t> partial_sums(getWorkers() * 8);
@@ -145,6 +182,7 @@
 		}
 
 		for(size_t i = 0; i < partial_sums.size(); i++) { partial_sums[i] = 0; }
+
 		start = get_usecs();
 		cilk_for(uint32_t i = 0; i < num_copies; i++) {
 			partial_sums[getWorkerNum() * 8] += dsv[i].sum_keys_direct();
@@ -178,23 +216,32 @@
 [[nodiscard]] int parallel_test_sorted_vector(uint32_t el_count, uint32_t num_copies, double prob_insert) {
 	std::vector<uint64_t> insert_times(NUM_TRIALS);
 	std::vector<uint64_t> sum_times(NUM_TRIALS);
+	std::vector<uint32_t> elts;
 
 	uint64_t start, end;
 
 	for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
 		std::vector<std::vector<key_type>> dsv(num_copies);
-		start = get_usecs();
+		for(uint32_t i = 0; i < num_copies; i++) {
+			dsv[i].reserve(el_count);
+		}
+		// prefill the input
+		std::uniform_int_distribution<uint32_t> dist_el(1, 1088 * 16);
+		std::mt19937 rng(0);
+		for (uint32_t j = 0; j < el_count; j++) {
+			uint32_t el = dist_el(rng);
+			elts.push_back(el);
+		}
+
 		cilk_for(uint32_t i = 0; i < num_copies; i++) {
 #if DEBUG
   		std::unordered_set<key_type> checker;
 #endif
-			std::mt19937 rng(0);
-			std::uniform_int_distribution<key_type> dist_el(1, N * 16);
   		std::uniform_real_distribution<double> dist_flip(.25, .75);
-			for (uint32_t j = 0; j < el_count; j++) {
-				uint32_t el = dist_el(rng);
+			for (uint32_t j = 0; j < el_count / 2; j++) {
 				// find the elt at most the thing to insert
 				size_t idx = 0;
+				uint32_t el = elts[j];
 				for(; idx < dsv[i].size(); idx++) {
 					if(dsv[i][idx] == el) {
 						break;
@@ -202,6 +249,11 @@
 						break;
 					}
 				}
+				if(dsv[i].size() == 0 || dsv[i][idx] != el) {
+					dsv[i].insert(dsv[i].begin() + idx, el);
+				}
+
+				/*
 				if (dist_flip(rng) < prob_insert) {
 					// vector does before
 					if(dsv[i].size() == 0 || dsv[i][idx] != el) {
@@ -228,15 +280,75 @@
 						tbassert(dsv[i].size() == checker.size(), "got %lu elts, should be %lu\n", dsv[i].size(), checker.size());
 					}
 		#endif
-			} else { // remove
-				if(dsv[i][idx] == el) {
-					dsv[i].erase(dsv[i].begin() + idx);
+				} else { // remove
+					if(dsv[i][idx] == el) {
+						dsv[i].erase(dsv[i].begin() + idx);
+					}
 				}
+				*/
 			}
 		}
-	}
-	end = get_usecs();
 
+		printf("\tsize after half = %lu\n", dsv[0].size());
+		start = get_usecs();
+		cilk_for(uint32_t i = 0; i < num_copies; i++) {
+#if DEBUG
+  		std::unordered_set<key_type> checker;
+#endif
+  		std::uniform_real_distribution<double> dist_flip(.25, .75);
+			for (uint32_t j = el_count / 2; j < el_count; j++) {
+				uint32_t el = elts[j];
+				// find the elt at most the thing to insert
+				size_t idx = 0;
+				for(; idx < dsv[i].size(); idx++) {
+					if(dsv[i][idx] == el) {
+						break;
+					} else if (dsv[i][idx] > el) {
+						break;
+					}
+				}
+				if(dsv[i].size() == 0 || dsv[i][idx] != el) {
+					dsv[i].insert(dsv[i].begin() + idx, el);
+				}
+				/*
+				if (dist_flip(rng) < prob_insert) {
+					// vector does before
+					if(dsv[i].size() == 0 || dsv[i][idx] != el) {
+	#if DEBUG_PRINT
+						printf("\telt %u not found, inserting at idx %lu, current size = %lu\n", el, idx, dsv[i].size());
+	#endif
+						dsv[i].insert(dsv[i].begin() + idx, el);
+					}
+	#if DEBUG
+					checker.insert(el);
+					// test sortedness
+					for(idx = 1; idx < dsv[i].size(); idx++) {
+						assert(dsv[i][idx] > dsv[i][idx-1]);
+					}
+					printf("\n");
+					for(uint32_t i = 0; i < num_copies; i++) {
+						for(auto elt : checker) {
+							if (std::find(dsv[i].begin(), dsv[i].end(), elt) == dsv[i].end()) {
+								printf("didn't find %u\n", elt);
+								assert(false);
+							}
+						}
+
+						tbassert(dsv[i].size() == checker.size(), "got %lu elts, should be %lu\n", dsv[i].size(), checker.size());
+					}
+		#endif
+				} else { // remove
+					if(dsv[i][idx] == el) {
+						dsv[i].erase(dsv[i].begin() + idx);
+					}
+				}
+				*/
+			}
+		}
+
+		end = get_usecs();
+
+		printf("\tsize after all = %lu\n", dsv[0].size());
 		if (trial > 0) {
 			insert_times[trial - 1] = end - start;
 		}
@@ -275,26 +387,42 @@
 [[nodiscard]] int parallel_test_unsorted_vector(uint32_t el_count, uint32_t num_copies, double prob_insert) {
 	std::vector<uint64_t> insert_times(NUM_TRIALS);
 	std::vector<uint64_t> sum_times(NUM_TRIALS);
+	std::vector<uint32_t> elts;
 
 	uint64_t start, end;
 	for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
 		std::vector<std::vector<key_type>> dsv(num_copies);
-		start = get_usecs();
+		for(uint32_t i = 0; i < num_copies; i++) {
+			dsv[i].reserve(el_count);
+		}
+
+		// prefill the input
+		std::uniform_int_distribution<uint32_t> dist_el(1, 1088 * 16);
+		std::mt19937 rng(0);
+		for (uint32_t j = 0; j < el_count; j++) {
+			uint32_t el = dist_el(rng);
+			elts.push_back(el);
+		}
+		
+		// insert first half
 		cilk_for(uint32_t i = 0; i < num_copies; i++) {
-			std::mt19937 rng(0);
-			std::uniform_int_distribution<key_type> dist_el(1, N * 16);
   		std::uniform_real_distribution<double> dist_flip(.25, .75);
 
-			for (uint32_t j = 0; j < el_count; j++) {
-				uint32_t el = dist_el(rng);
-
+			for (uint32_t j = 0; j < el_count / 2; j++) {
 				// find the elt at most the thing to insert
+				uint32_t el = elts[j];
 				size_t idx = 0;
 				for(; idx < dsv[i].size(); idx++) {
 					if(dsv[i][idx] == el) {
 						break;
 					} 
 				}
+				// insert only for now
+				if(idx == dsv[i].size()) {
+					dsv[i].push_back(elts[j]);
+				}
+			
+				/*
 				if (dist_flip(rng) < prob_insert) {
 					// if not found, add it to the end
 					if(idx == dsv[i].size()) {
@@ -305,9 +433,46 @@
 						dsv[i].erase(dsv[i].begin() + idx);
 					}
 				}
+			*/
+			}
+		}
+		printf("\tsize after half = %lu\n", dsv[0].size());
+
+		// count time for second half
+		start = get_usecs();
+		cilk_for(uint32_t i = 0; i < num_copies; i++) {
+  		std::uniform_real_distribution<double> dist_flip(.25, .75);
+
+			for (uint32_t j = el_count / 2; j < el_count; j++) {
+				uint32_t el = elts[j];
+				// find the elt at most the thing to insert
+				size_t idx = 0;
+				for(; idx < dsv[i].size(); idx++) {
+					if(dsv[i][idx] == el) {
+						break;
+					} 
+				}
+				if(idx == dsv[i].size()) {
+					dsv[i].push_back(el);
+				}
+
+				/*
+				if (dist_flip(rng) < prob_insert) {
+					// if not found, add it to the end
+					if(idx == dsv[i].size()) {
+						dsv[i].push_back(el);
+					}
+				} else { // delete
+					if(idx < dsv[i].size()) {
+						dsv[i].erase(dsv[i].begin() + idx);
+					}
+				}
+				*/
 			}
 		}
 		end = get_usecs();
+		printf("\tsize after all = %lu\n", dsv[0].size());
+
 		if (trial > 0) {
 			insert_times[trial - 1] = end - start;
 		}
@@ -322,6 +487,7 @@
 			}
 			partial_sums[getWorkerNum() * 8] += local_sum;
 		}
+
 		uint64_t count{0};
 		for(int i = 0; i < getWorkers(); i++) {
 			count += partial_sums[i*8];

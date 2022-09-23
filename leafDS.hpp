@@ -28,6 +28,7 @@
 #define ASSERT(PREDICATE, ...)                                                 
 #endif
 
+#define STATS 0
 
 static uint64_t one[128] = {
   1ULL << 0, 1ULL << 1, 1ULL << 2, 1ULL << 3, 1ULL << 4, 1ULL << 5, 1ULL << 6, 1ULL << 7, 1ULL << 8, 1ULL << 9,
@@ -98,6 +99,16 @@ private:
 		return result;
 	}
 
+#if STATS
+  uint32_t num_redistributes = 0;
+  uint32_t vol_redistributes = 0;
+public:
+  void report_redistributes() {
+    printf("num redistributes = %u, vol redistributes %u\n", num_redistributes, vol_redistributes);
+  }
+#endif
+
+private:
 
 	// private helpers
 	void update_val_at_index(element_type e, size_t index);
@@ -212,6 +223,11 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::clear_range(siz
 // given a merged list, put it in the DS
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... ts>
 void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistribute_buffer(element_type* buffer, size_t n) {
+#if STATS
+	num_redistributes++;
+	vol_redistributes += N;
+#endif
+
 #if DEBUG
 	assert(n < N - 2*log_size);	
 #endif
@@ -254,6 +270,12 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 // just redistrib the header/blocks
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... ts>
 void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistribute_blocks(unsigned short* count_per_block) {
+
+#if STATS
+	num_redistributes++;
+	vol_redistributes += N - header_size;
+#endif
+
 	// sort each block
 	// size_t end_blocks = 0;
 	for (size_t i = 0; i < num_blocks; i++) {
@@ -406,18 +428,40 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block(ke
 // return index of the block that this elt would fall in
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_with_hint(key_type key, size_t hint) const {
-	size_t i = header_start + hint;
+
 #if DEBUG
+	// scalar version for debug
+	size_t i = header_start + hint;
 	assert(key >= blind_read_key(i));
-#endif
-	// TODO: vectorize with leq vector instruction
-	size_t ret = hint;
+	size_t correct_ret = hint;
+
 	for( ; i < blocks_start; i++) {
-		ret += blind_read_key(i) <= key;
+		correct_ret += blind_read_key(i) <= key;
 	}
+	if (correct_ret == num_blocks || blind_read_key(header_start + correct_ret) > key) {
+		correct_ret--;
+	}
+#endif
+
+	// vector version
+	size_t vector_start = header_start;
+	size_t vector_end = blocks_start;
+	size_t ret = 0;
+	for(; vector_start < vector_end; vector_start += 16) {
+		__m512i bcast = _mm512_set1_epi32(key);
+		__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + vector_start * sizeof(key_type)));
+
+		auto mask = _mm512_cmple_epi32_mask(block, bcast);
+		ret += __builtin_popcount(mask);
+	}
+
+	// TODO: can you do to the next line faster?
 	if (ret == num_blocks || blind_read_key(header_start + ret) > key) {
 		ret--;
 	}
+
+
+	ASSERT(ret == correct_ret, "got %lu, should be %lu\n", ret, correct_ret);
 #if DEBUG
 	i = header_start + hint;
 	for( ; i < blocks_start; i++) {
@@ -521,8 +565,6 @@ uint16_t get_right_mask(size_t end) {
 // if e is in the range, update it and return true
 // otherwise return false
 // also return index found or index stopped at
-
-
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 template <range_type type>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range_if_exists(size_t start,
@@ -531,11 +573,11 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 	[[maybe_unused]] bool correct_answer = false;
 	[[maybe_unused]] size_t test_i = start;
 #if DEBUG
+	// scalar version for correctness
 	const key_type key = std::get<0>(e);
 
-	for(; test_i < end; test_i++) { // TODO: vectorize this for loop using AVX-512
+	for(; test_i < end; test_i++) { 
 		if (key == get_key_array(test_i)) {
-			// update_val_at_index(e, test_i);
 			correct_answer = true;
 			break;
 		} else if (get_key_array(test_i) == NULL_VAL) {
@@ -545,6 +587,8 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 	}
 	// correct_answer = false;
 #endif
+
+	// vector version
 	if constexpr (type == BLOCK) {
 		assert(start % 16 == 0);
 		assert(end % 16 == 0);
@@ -627,7 +671,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 	return false;
 } 
 
-
+// (only used in delete)
 // given a range [start, end), look for elt e 
 // if e is in the range, update it and return true
 // otherwise return false
@@ -636,7 +680,6 @@ template <size_t log_size, size_t header_size, size_t block_size, typename key_t
 std::pair<bool, size_t> LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_key_in_range(size_t start,
 	size_t end, key_type key) const {
 	size_t i = start;
-
 
 	for(; i < end; i++) { // TODO: vectorize this for loop using AVX-512
 		// if found, update the val and return	
@@ -671,12 +714,26 @@ unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count
 	size_t block_start = blocks_start + block_idx * block_size;
 	size_t block_end = block_start + block_size;
 
+#if DEBUG
 	// count number of nonzero elts in this block
-	uint64_t count = 0;
-	//for(size_t i = block_start; i < block_end; i++) {
-	SOA_type::template map_range_static(array.data(), N, [&count](auto key) {count += key != 0;}, block_start, block_end);
-	//	count += (blind_read_key(i) != 0);
-  //	}
+	uint64_t correct_count = 0;
+	SOA_type::template map_range_static(array.data(), N, [&correct_count](auto key) {correct_count += key != 0;}, block_start, block_end);
+#endif
+
+	uint64_t num_zeroes = 0;
+	for(; block_start < block_end; block_start += 16) {
+		__m512i bcast = _mm512_set1_epi32(0);
+		__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + block_start * sizeof(key_type)));
+
+		auto mask = _mm512_cmpeq_epi32_mask(block, bcast);
+		num_zeroes += __builtin_popcount(mask);
+	}
+
+	ASSERT(num_zeroes <= block_size, "counted zeroes %lu, block size %lu\n", num_zeroes, block_size);
+
+	uint64_t count = block_size - num_zeroes;
+
+	ASSERT(correct_count == count, "counting block %lu, got count %lu, should be %lu\n", block_idx, count, correct_count);
 	return count;
 }
 
@@ -748,9 +805,6 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 
 	// TODO: merge these loops and count the rest in global redistribute
 	for (size_t i = 0; i < num_blocks; i++) {
-		// TODO: vectorize count_block by counting empty slots
-		// set the key to 0 and do popcount to count the zeroes
-		// subtract from total slots
 		count_per_block[i] = count_block(i);
 	}
 
@@ -838,8 +892,6 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::delete_from_blo
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_type e) {
 	// first try to update the key if it is in the log
-	// TODO: the simplest vectorized version looks in all of the cache lines in the log
-	// another vectorized version fills one cache line at a time
 	auto result = update_in_range_if_exists<INSERTS>(0, num_inserts_in_log, e);
 	if (result) { 
 		return false; 
@@ -1001,7 +1053,6 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_deletes_t
 	unsigned short count_per_block[num_blocks];
   bool redistribute = false;
 	for (size_t i = 0; i < num_blocks; i++) {
-    // TODO: vectorize count_block by counting empty slots
     count_per_block[i] = count_block(i);
 		if (count_per_block[i] == 0) { redistribute = true; }
   }
@@ -1019,7 +1070,6 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::strip_deletes_a
   unsigned short count_per_block[num_blocks];
   size_t total_count = 0;
 	for (size_t i = 0; i < num_blocks; i++) {
-    // TODO: vectorize count_block by counting empty slots
     count_per_block[i] = count_block(i);
 		total_count += count_per_block[i];
   }
@@ -1235,7 +1285,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 
 // return N if not found, otherwise return the slot the key is at
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index_in_blocks(key_type e) const {
+inline size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index_in_blocks(key_type e) const {
 	// if less than current min, should not be in ds
 	if (e < blind_read_key(header_start)) {
 		return N;
@@ -1251,6 +1301,7 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index_in_
 	}
 	
 	// check the block
+	// TODO: vectorize this search
 	auto range = get_block_range(block_idx);
 	for(size_t i = range.first; i < range.second; i++) {
 		if (blind_read_key(i) == NULL_VAL) {
