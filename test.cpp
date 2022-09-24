@@ -1,5 +1,4 @@
 // main test driver for leafDS
-// #define DEBUG 0
 #define DEBUG_PRINT 0
 
 #include "tbassert.h"
@@ -16,8 +15,9 @@
 #include "parallel.h"
 #include "leafDS.hpp"
 
-#define LOG_SIZE 32
-#define HEADER_SIZE 32
+
+#define HEADER_SIZE 64
+#define LOG_SIZE HEADER_SIZE
 #define BLOCK_SIZE 32
 #define NUM_TRIALS 5
 #define MEDIAN_TRIAL NUM_TRIALS / 2
@@ -33,13 +33,13 @@
 	uint64_t start, end;
 	for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
 		// do inserts
-		std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, uint32_t>> dsv(num_copies);
+		std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type>> dsv(num_copies);
 		start = get_usecs();
 		cilk_for(uint32_t i = 0; i < num_copies; i++) {
 			std::mt19937 rng(0);
-			std::uniform_int_distribution<uint32_t> dist_el(1, N * 16);
+			std::uniform_int_distribution<key_type> dist_el(1, N * 16);
 			for (uint32_t j = 0; j < el_count; j++) {
-				uint32_t el = dist_el(rng);
+				key_type el = dist_el(rng);
 				dsv[i].insert(el);
 			}
 		}
@@ -101,26 +101,26 @@
 	std::vector<uint64_t> insert_times(NUM_TRIALS);
 	std::vector<uint64_t> sum_times_with_map(NUM_TRIALS);
 	std::vector<uint64_t> sum_times_direct(NUM_TRIALS);
-	std::vector<uint32_t> elts;
+	std::vector<key_type> elts;
 	// prefill the input
-	std::uniform_int_distribution<uint32_t> dist_el(1, 1088 * 16);
+	std::uniform_int_distribution<key_type> dist_el(1, 1088 * 16);
 	std::mt19937 rng(0);
 	for (uint32_t j = 0; j < el_count; j++) {
-		uint32_t el = dist_el(rng);
+		key_type el = dist_el(rng);
 		elts.push_back(el);
 	}
 
 	uint64_t start, end;
 	for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
 		// do inserts
-		std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, uint32_t>> dsv(num_copies);
+		std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type>> dsv(num_copies);
 
 		// add the first half
 		cilk_for(uint32_t i = 0; i < num_copies; i++) {
   		std::uniform_real_distribution<double> dist_flip(.25, .75);
 
 			for (uint32_t j = 0; j < el_count / 2; j++) {
-				uint32_t el = elts[j];
+				key_type el = elts[j];
 				dsv[i].insert(el);
 				/*
 				if (dist_flip(rng) < prob_insert) {
@@ -142,10 +142,10 @@
   		std::uniform_real_distribution<double> dist_flip(.25, .75);
 
 			for (uint32_t j = el_count / 2; j < el_count; j++) {
-				uint32_t el = elts[j];
+				key_type el = elts[j];
 				dsv[i].insert(el);
 				/*
-				uint32_t el = dist_el(rng);
+				key_type el = dist_el(rng);
 				if (dist_flip(rng) < prob_insert) {
 					dsv[i].insert(el);
 				} else {
@@ -216,7 +216,7 @@
 [[nodiscard]] int parallel_test_sorted_vector(uint32_t el_count, uint32_t num_copies, double prob_insert) {
 	std::vector<uint64_t> insert_times(NUM_TRIALS);
 	std::vector<uint64_t> sum_times(NUM_TRIALS);
-	std::vector<uint32_t> elts;
+	std::vector<key_type> elts;
 
 	uint64_t start, end;
 
@@ -226,10 +226,10 @@
 			dsv[i].reserve(el_count);
 		}
 		// prefill the input
-		std::uniform_int_distribution<uint32_t> dist_el(1, 1088 * 16);
+		std::uniform_int_distribution<key_type> dist_el(1, 1088 * 16);
 		std::mt19937 rng(0);
 		for (uint32_t j = 0; j < el_count; j++) {
-			uint32_t el = dist_el(rng);
+			key_type el = dist_el(rng);
 			elts.push_back(el);
 		}
 
@@ -241,7 +241,7 @@
 			for (uint32_t j = 0; j < el_count / 2; j++) {
 				// find the elt at most the thing to insert
 				size_t idx = 0;
-				uint32_t el = elts[j];
+				key_type el = elts[j];
 				for(; idx < dsv[i].size(); idx++) {
 					if(dsv[i][idx] == el) {
 						break;
@@ -297,7 +297,7 @@
 #endif
   		std::uniform_real_distribution<double> dist_flip(.25, .75);
 			for (uint32_t j = el_count / 2; j < el_count; j++) {
-				uint32_t el = elts[j];
+				key_type el = elts[j];
 				// find the elt at most the thing to insert
 				size_t idx = 0;
 				for(; idx < dsv[i].size(); idx++) {
@@ -387,7 +387,7 @@
 [[nodiscard]] int parallel_test_unsorted_vector(uint32_t el_count, uint32_t num_copies, double prob_insert) {
 	std::vector<uint64_t> insert_times(NUM_TRIALS);
 	std::vector<uint64_t> sum_times(NUM_TRIALS);
-	std::vector<uint32_t> elts;
+	std::vector<key_type> elts;
 
 	uint64_t start, end;
 	for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
@@ -397,10 +397,10 @@
 		}
 
 		// prefill the input
-		std::uniform_int_distribution<uint32_t> dist_el(1, 1088 * 16);
+		std::uniform_int_distribution<key_type> dist_el(1, 1088 * 16);
 		std::mt19937 rng(0);
 		for (uint32_t j = 0; j < el_count; j++) {
-			uint32_t el = dist_el(rng);
+			key_type el = dist_el(rng);
 			elts.push_back(el);
 		}
 		
@@ -444,7 +444,7 @@
   		std::uniform_real_distribution<double> dist_flip(.25, .75);
 
 			for (uint32_t j = el_count / 2; j < el_count; j++) {
-				uint32_t el = elts[j];
+				key_type el = elts[j];
 				// find the elt at most the thing to insert
 				size_t idx = 0;
 				for(; idx < dsv[i].size(); idx++) {
@@ -554,7 +554,7 @@
 
 	// add some elements
 	for (uint32_t i = 0; i < el_count; i++) {
-    uint32_t el = dist_el(rng);
+    key_type el = dist_el(rng);
 		elts.push_back(el);
 		ds.insert(el);
 		if (check) {
@@ -630,7 +630,7 @@
 
 	for (uint32_t i = 0; i < el_count; i++) {
     // be more likely to insert when we are more empty
-    uint32_t el = dist_el(rng);
+    key_type el = dist_el(rng);
 
 		// if (dist_flip(rng) < ((double)(N - ds.get_num_elts()) / N)) {
 		if (dist_flip(rng) < 1.0) {
@@ -677,7 +677,7 @@
 			}
 		}
 		bool has_all = true;
-		ds.template map<true>([&has_all, &checker](uint32_t key) {
+		ds.template map<true>([&has_all, &checker](key_type key) {
 			has_all &= checker.contains(key);
 		});
 		if (!has_all) {

@@ -66,7 +66,7 @@ private:
 	static constexpr key_type NULL_VAL = {};
 
 	static constexpr size_t num_blocks = header_size;
-	static constexpr size_t N = log_size + header_size + header_size * num_blocks;
+	static constexpr size_t N = log_size + header_size + block_size * num_blocks;
 
 
   static_assert(N != 0, "N cannot be 0");
@@ -229,9 +229,13 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 #endif
 
 #if DEBUG
-	assert(n < N - 2*log_size);	
+	assert(n < N);	
 #endif
   clear_range(header_start, N); // clear the header and blocks
+
+#if DEBUG_PRINT
+	printf("GLOBAL REDISTRIB BUFFER OF SIZE %lu\n", n);
+#endif
 
   // split up the buffer into blocks
   size_t per_block = n / num_blocks;
@@ -250,12 +254,17 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
     blind_write(buffer[num_so_far], header_start + i);
     num_to_flush--;
     num_so_far++;
-
+#if DEBUG_PRINT
+		printf("\tset buf[%u] = %u as header of block %u at pos %u\n", num_so_far, std::get<0>(buffer[num_so_far]), i, header_start + i);
+#endif
     // write the rest into block
-    size_t start = blocks_start + i * num_blocks;
+    size_t start = blocks_start + i * block_size;
     for(size_t j = 0; j < num_to_flush; j++) {
 #if DEBUG
 			assert(num_so_far < n);
+#endif
+#if DEBUG_PRINT
+		printf("\tset buf[%u] = %u in block %u at pos %u\n", num_so_far, std::get<0>(buffer[num_so_far]), i, start + j);
 #endif
       blind_write(buffer[num_so_far], start + j);
       num_so_far++;
@@ -265,6 +274,11 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
   assert(num_so_far == n);
 #endif
 	num_elts_total = num_so_far + num_inserts_in_log;
+
+#if DEBUG_PRINT
+	printf("after global redistrib blocks\n");
+	print();
+#endif
 }
 
 // just redistrib the header/blocks
@@ -539,6 +553,7 @@ static inline uint8_t word_select(uint64_t val, int rank) {
   return _tzcnt_u64(val);
 }
 
+// TODO: can precompute the masks
 uint16_t get_left_mask(size_t start) {
 	assert(start < 16);
 
@@ -547,9 +562,9 @@ uint16_t get_left_mask(size_t start) {
 	mask >>= start;
 	return mask;
 
-	// TODO: can precompute the masks
 }
 
+// TODO: can precompute the masks
 uint16_t get_right_mask(size_t end) {
 	assert(end < 16);
 
@@ -557,8 +572,6 @@ uint16_t get_right_mask(size_t end) {
 	mask >>= end;
 	mask <<= end;
 	return mask;
-
-	// TODO: can precompute the masks
 }
 
 // given a range [start, end), look for elt e 
@@ -578,6 +591,10 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 
 	for(; test_i < end; test_i++) { 
 		if (key == get_key_array(test_i)) {
+		#if DEBUG_PRINT
+			printf("CORRECT FOUND KEY %u AT IDX %u\n", std::get<0>(e), test_i);
+			print();
+		#endif
 			correct_answer = true;
 			break;
 		} else if (get_key_array(test_i) == NULL_VAL) {
@@ -652,9 +669,12 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 
 	// do the remaining ragged right, if there is any.
 	if constexpr (type == INSERTS) {
+		// printf("vector start %lu, end %lu\n", vector_start, end);
 		if (vector_start < end) { // this is not exactly optimal, TBD how to remove it
-			uint16_t right_mask = get_right_mask(end % 16);
+			uint16_t right_mask = get_right_mask(16 - (end % 16));
 			mask = slot_mask_32(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
+
+			// printf("right mask %u, mask %u\n", right_mask, mask);
 			mask &= right_mask;
 
 			if (mask > 0) {
@@ -667,7 +687,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 		}
 	}
 
-	assert((correct_answer == false));
+	ASSERT((correct_answer == false), "searching for key %u in range [%lu, %lu)\n", std::get<0>(e), start, end);
 	return false;
 } 
 
@@ -815,6 +835,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 		if (count_per_block[i] + num_to_flush_per_block[i] >= block_size) {
 			need_global_redistrubute = true;
 #if DEBUG_PRINT
+			printf("*** GLOBAL REDISTRIB FROM OVERFLOW ***\n");
 			printf("at block %lu, count_per_block = %u, num to flush = %u\n", i, count_per_block[i], num_to_flush_per_block[i]);
 			print();
 #endif
@@ -1296,6 +1317,7 @@ inline size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_in
 	printf("\tin has for elt %u, find block returned %lu\n", e, block_idx);
 #endif
 	// check the header
+	assert(e >= blind_read_key(header_start + block_idx));
 	if (e == blind_read_key(header_start + block_idx)) {
 		return header_start + block_idx;
 	}
@@ -1303,6 +1325,10 @@ inline size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_in
 	// check the block
 	// TODO: vectorize this search
 	auto range = get_block_range(block_idx);
+
+#if DEBUG_PRINT
+	printf("\tblock range [%lu, %lu)\n", range.first, range.second);
+#endif
 	for(size_t i = range.first; i < range.second; i++) {
 		if (blind_read_key(i) == NULL_VAL) {
 			return N;
@@ -1334,8 +1360,9 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::has(key_type e) const {
 	// first check if it is in the delete log
-	for(size_t i = log_size; i < log_size + num_deletes_in_log; i++) {
+	for(size_t i = log_size; i > log_size - num_deletes_in_log; i--) {
 		if(blind_read_key(i) == e) {
+			printf("found %u in delete log\n", e);
 			return false;
 		}
 	}
@@ -1354,7 +1381,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print_range(siz
 					if constexpr (binary) {
 						std::cout << key << ", ";
 					} else {
-						std::cout << "(" << key << ", ";
+						std::cout << "((_" << index << "_)" << key << ", ";
 						((std::cout << ", " << args), ...);
 						std::cout << "), ";
 					}
