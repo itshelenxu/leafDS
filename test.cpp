@@ -15,7 +15,6 @@
 #include "parallel.h"
 #include "leafDS.hpp"
 
-
 #define HEADER_SIZE 64
 #define LOG_SIZE HEADER_SIZE
 #define BLOCK_SIZE 32
@@ -23,7 +22,7 @@
 #define MEDIAN_TRIAL NUM_TRIALS / 2
 #define N LOG_SIZE + HEADER_SIZE + BLOCK_SIZE * HEADER_SIZE
 
-#define key_type uint32_t
+#define key_type uint64_t
 
 [[nodiscard]] int parallel_test_insert_leafDS(uint32_t el_count, uint32_t num_copies) {
 	std::vector<uint64_t> insert_times(NUM_TRIALS);
@@ -634,7 +633,7 @@
 
 		// if (dist_flip(rng) < ((double)(N - ds.get_num_elts()) / N)) {
 		if (dist_flip(rng) < 1.0) {
-			printf("inserting %u\n", el);
+			printf("\ninserting %u\n", el);
 			ds.insert(el);
 			if (check) {
 				checker.insert(el);

@@ -12,6 +12,7 @@
 #include <tuple>
 #include <type_traits>
 #include <immintrin.h>
+#include <typeinfo>
 
 #if DEBUG==1
 #define ASSERT(PREDICATE, ...)                                                 \
@@ -61,6 +62,74 @@ class LeafDS {
   using SOA_type = typename std::conditional<binary, SOA<key_type>,
                                              SOA<key_type, Ts...>>::type;
 
+	static constexpr size_t keys_per_vector = 64 / sizeof(key_type);
+	
+	static constexpr uint32_t all_ones_vec = keys_per_vector - 1;
+
+	using mask_type = 
+		typename std::conditional<sizeof(key_type) == 4, __mmask16, __mmask8>::type;
+
+	// idk why it complained about this one
+	using lr_mask_type = 
+		typename std::conditional<sizeof(key_type) == 4, uint16_t, uint8_t>::type;
+
+	// TODO: can precompute the masks
+	lr_mask_type get_left_mask(size_t start) {
+		assert(start < keys_per_vector);
+#if DEBUG_PRINT
+		printf("\tget left mask start = %lu\n", start);
+#endif
+		lr_mask_type mask;
+		if constexpr (std::is_same<key_type, uint32_t>::value) { // 32-bit keys
+			mask = 0xFFFF;
+		} else {
+			mask = 0xFF;
+		}
+		mask <<= start;
+		mask >>= start;
+		return mask;
+	}
+
+	// TODO: can precompute the masks
+	auto get_right_mask(size_t end) {
+		assert(end < keys_per_vector);
+#if DEBUG_PRINT
+		printf("\tget right mask end = %lu\n", end);
+#endif
+		lr_mask_type mask;
+		if constexpr (std::is_same<key_type, uint32_t>::value) { // 32-bit keys
+			mask = 0xFFFF;
+		} else {
+			mask = 0xFF;
+		}
+		mask >>= end;
+		mask <<= end;
+		return mask;
+	}
+
+
+	// 64 bytes per cache line / 4 bytes per elt = 16-bit vector
+	// wherever there is a match, it will set those bits
+	static inline __mmask16 slot_mask_32(uint8_t * array, uint32_t key) {
+		__m512i bcast = _mm512_set1_epi32(key);
+		__m512i block = _mm512_loadu_si512((const __m512i *)(array));
+		return _mm512_cmp_epi32_mask(bcast, block, _MM_CMPINT_EQ);
+	}
+
+	static inline __mmask8 slot_mask_64(uint8_t * array, uint64_t key) {
+		__m512i bcast = _mm512_set1_epi64(key);
+		__m512i block = _mm512_loadu_si512((const __m512i *)(array));
+		return _mm512_cmp_epi64_mask(bcast, block, _MM_CMPINT_EQ);
+	}
+
+	static inline mask_type slot_mask(uint8_t * array, key_type key) {
+		if constexpr (std::is_same<key_type, uint32_t>::value) { // 32-bit keys
+			return slot_mask_32(array, key);
+		} else {
+			return slot_mask_64(array, key);
+		}
+	}
+
 
 private:
 	static constexpr key_type NULL_VAL = {};
@@ -68,9 +137,8 @@ private:
 	static constexpr size_t num_blocks = header_size;
 	static constexpr size_t N = log_size + header_size + block_size * num_blocks;
 
-
   static_assert(N != 0, "N cannot be 0");
-	
+
 	// start of each section
 	// insert and delete log
 	static constexpr size_t header_start = log_size;
@@ -461,11 +529,17 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_wi
 	size_t vector_start = header_start;
 	size_t vector_end = blocks_start;
 	size_t ret = 0;
-	for(; vector_start < vector_end; vector_start += 16) {
-		__m512i bcast = _mm512_set1_epi32(key);
-		__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + vector_start * sizeof(key_type)));
-
-		auto mask = _mm512_cmple_epi32_mask(block, bcast);
+	mask_type mask;
+	for(; vector_start < vector_end; vector_start += keys_per_vector) {
+		if constexpr (std::is_same<key_type, uint32_t>::value) { // 32-bit keys
+			__m512i bcast = _mm512_set1_epi32(key);
+			__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + vector_start * sizeof(key_type)));
+			mask = _mm512_cmple_epi32_mask(block, bcast);
+		} else {
+			__m512i bcast = _mm512_set1_epi64(key);
+			__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + vector_start * sizeof(key_type)));
+			mask = _mm512_cmple_epi64_mask(block, bcast);
+		}
 		ret += __builtin_popcount(mask);
 	}
 
@@ -526,21 +600,6 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_log() {
 	sort_range(0, num_inserts_in_log);
 }
 
-// 64 bytes per cache line / 4 bytes per elt = 16-bit vector
-// wherever there is a match, it will set those bits
-static inline __mmask16 slot_mask_32(uint8_t * array, uint32_t key) {
-  __m512i bcast = _mm512_set1_epi32(key);
-  __m512i block = _mm512_loadu_si512((const __m512i *)(array));
-  return _mm512_cmp_epi32_mask(bcast, block, _MM_CMPINT_EQ);
-}
-
-static inline __mmask8 slot_mask_64(uint8_t * array, uint64_t key) {
-  __m512i bcast = _mm512_set1_epi64(key);
-  __m512i block = _mm512_loadu_si512((const __m512i *)(array));
-  return _mm512_cmp_epi64_mask(bcast, block, _MM_CMPINT_EQ);
-}
-
-
 // if you expect at most 1 occurrence, use compare to 0
 // then use tzcnt to tell you the index of the first 1
 
@@ -553,27 +612,6 @@ static inline uint8_t word_select(uint64_t val, int rank) {
   return _tzcnt_u64(val);
 }
 
-// TODO: can precompute the masks
-uint16_t get_left_mask(size_t start) {
-	assert(start < 16);
-
-	uint16_t mask = 0xFFFF;
-	mask <<= start;
-	mask >>= start;
-	return mask;
-
-}
-
-// TODO: can precompute the masks
-uint16_t get_right_mask(size_t end) {
-	assert(end < 16);
-
-	uint16_t mask = 0xFFFF;
-	mask >>= end;
-	mask <<= end;
-	return mask;
-}
-
 // given a range [start, end), look for elt e 
 // if e is in the range, update it and return true
 // otherwise return false
@@ -582,6 +620,9 @@ template <size_t log_size, size_t header_size, size_t block_size, typename key_t
 template <range_type type>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range_if_exists(size_t start,
 	size_t end, element_type e) {
+#if DEBUG_PRINT
+	printf("*** start = %lu, end = %lu ***\n", start, end);
+#endif
 
 	[[maybe_unused]] bool correct_answer = false;
 	[[maybe_unused]] size_t test_i = start;
@@ -602,16 +643,14 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 			break;
 		}
 	}
-	// correct_answer = false;
 #endif
-
 	// vector version
 	if constexpr (type == BLOCK) {
-		assert(start % 16 == 0);
-		assert(end % 16 == 0);
+		assert(start % keys_per_vector == 0);
+		assert(end % keys_per_vector == 0);
 	
-		for(size_t vector_start = start; vector_start < end; vector_start += 16) {
-			auto mask = slot_mask_32(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
+		for(size_t vector_start = start; vector_start < end; vector_start += keys_per_vector) {
+			mask_type mask = slot_mask(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
 			if (mask > 0) {
 				auto i = vector_start + _tzcnt_u64(mask);
 
@@ -626,13 +665,16 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 	} 
 
 	// if you are in the log
-	size_t vector_start = start & ~(15u);
-	size_t vector_end = (end + 15) & ~(15u);
+	size_t vector_start = start & ~(all_ones_vec);
+	size_t vector_end = (end + all_ones_vec) & ~(all_ones_vec);
+#if DEBUG_PRINT
+	printf("\tvector start %lu, vector end %lu\n", vector_start, vector_end);
+#endif
+	mask_type mask = slot_mask(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
 
-	auto mask = slot_mask_32(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
-	
 	if constexpr (type == DELETES) {
-		uint16_t left_mask = get_left_mask(start % 16);
+		// TODO: check that this is right
+		lr_mask_type left_mask = get_right_mask(start % keys_per_vector);
 		mask &= left_mask;
 		if (mask > 0) {
 			auto idx = vector_start + _tzcnt_u64(mask); // check if there is an off-by-1 in tzcnt
@@ -643,43 +685,55 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 			update_val_at_index(e, idx);
 			return true;
 		}
-		vector_start += 16;
+		vector_start += keys_per_vector;
 	}
 	
-	if (vector_end < 16) {
+	if (vector_end < keys_per_vector) {
 		assert((correct_answer == false));
 		return false;
 	}
 
 	// do blocks or any full blocks of the log
 	// will miss the last full block, if there is one
-	while(vector_start + 16 <= end) {
-		auto mask = slot_mask_32(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
+	while(vector_start + keys_per_vector <= end) {
+		auto mask = slot_mask(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
 		if (mask > 0) {
 			auto i = vector_start + _tzcnt_u64(mask);
 
 			assert(test_i == i);
 			assert((correct_answer == true));
-
+#if DEBUG_PRINT
+			printf("\tVECTOR LOOP FOUND AT IDX %lu\n", i);
+#endif
 			update_val_at_index(e, i);
 			return true;
 		}
-		vector_start += 16;
+		vector_start += keys_per_vector;
 	}
+
+#if DEBUG_PRINT
+	printf("\tvector start %lu, end %lu\n", vector_start, end);
+#endif
 
 	// do the remaining ragged right, if there is any.
 	if constexpr (type == INSERTS) {
-		// printf("vector start %lu, end %lu\n", vector_start, end);
+#if DEBUG_PRINT
+		printf("\tINSERTS: vector start %lu, end %lu\n", vector_start, end);
+#endif
 		if (vector_start < end) { // this is not exactly optimal, TBD how to remove it
-			uint16_t right_mask = get_right_mask(16 - (end % 16));
-			mask = slot_mask_32(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
-
-			// printf("right mask %u, mask %u\n", right_mask, mask);
-			mask &= right_mask;
-
+			// vector fills from the right (tzcnt), so use get_left_mask
+			lr_mask_type left_mask = get_left_mask(end % keys_per_vector);
+			mask = slot_mask(array.data() + vector_start * sizeof(key_type), std::get<0>(e));
+#if DEBUG_PRINT
+			printf("\tleft mask %u, mask %u\n", left_mask, mask);
+#endif
+			mask &= left_mask;
 			if (mask > 0) {
 				auto i = vector_start + _tzcnt_u64(mask);
 				assert(test_i == i);
+#if DEBUG_PRINT
+				printf("\tVECTOR END FOUND AT IDX %lu\n", i);
+#endif
 				update_val_at_index(e, i);
 				assert((correct_answer == true));
 				return true;
@@ -741,11 +795,17 @@ unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count
 #endif
 
 	uint64_t num_zeroes = 0;
-	for(; block_start < block_end; block_start += 16) {
-		__m512i bcast = _mm512_set1_epi32(0);
-		__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + block_start * sizeof(key_type)));
-
-		auto mask = _mm512_cmpeq_epi32_mask(block, bcast);
+	mask_type mask;
+	for(; block_start < block_end; block_start += keys_per_vector) {
+		if constexpr (std::is_same<key_type, uint32_t>::value) { // 32-bit keys
+			__m512i bcast = _mm512_set1_epi32(0);
+			__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + block_start * sizeof(key_type)));
+			mask = _mm512_cmpeq_epi32_mask(block, bcast);
+		} else {
+			__m512i bcast = _mm512_set1_epi64(0);
+			__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + block_start * sizeof(key_type)));
+			mask = _mm512_cmpeq_epi64_mask(block, bcast);
+		}
 		num_zeroes += __builtin_popcount(mask);
 	}
 
