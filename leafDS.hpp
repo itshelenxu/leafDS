@@ -115,13 +115,13 @@ class LeafDS {
 	static inline __mmask16 slot_mask_32(uint8_t * array, uint32_t key) {
 		__m512i bcast = _mm512_set1_epi32(key);
 		__m512i block = _mm512_loadu_si512((const __m512i *)(array));
-		return _mm512_cmp_epi32_mask(bcast, block, _MM_CMPINT_EQ);
+		return _mm512_cmp_epu32_mask(bcast, block, _MM_CMPINT_EQ);
 	}
 
 	static inline __mmask8 slot_mask_64(uint8_t * array, uint64_t key) {
 		__m512i bcast = _mm512_set1_epi64(key);
 		__m512i block = _mm512_loadu_si512((const __m512i *)(array));
-		return _mm512_cmp_epi64_mask(bcast, block, _MM_CMPINT_EQ);
+		return _mm512_cmp_epu64_mask(bcast, block, _MM_CMPINT_EQ);
 	}
 
 	static inline mask_type slot_mask(uint8_t * array, key_type key) {
@@ -548,7 +548,7 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block(ke
 // return index of the block that this elt would fall in
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_with_hint(key_type key, size_t hint) const {
-
+	assert(blind_read_key(header_start) != 0);
 #if DEBUG || VALGRIND
 	// scalar version for debug
 	size_t i = header_start + hint;
@@ -569,27 +569,34 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_wi
 	// vector version
 	size_t vector_start = header_start;
 	size_t vector_end = blocks_start;
+	// printf("vector start = %lu, vector end = %lu, keys per vector = %lu\n", vector_start, vector_end, keys_per_vector);
 	size_t ret = 0;
 	mask_type mask;
 	for(; vector_start < vector_end; vector_start += keys_per_vector) {
 		if constexpr (std::is_same<key_type, uint32_t>::value) { // 32-bit keys
 			__m512i bcast = _mm512_set1_epi32(key);
 			__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + vector_start * sizeof(key_type)));
-			mask = _mm512_cmple_epi32_mask(block, bcast);
+			mask = _mm512_cmple_epu32_mask(block, bcast);
 		} else {
 			__m512i bcast = _mm512_set1_epi64(key);
+			// printf("key = %lu, vector_start = %lu, byte start = %lu\n", key, vector_start, vector_start * sizeof(key_type));
+
 			__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + vector_start * sizeof(key_type)));
-			mask = _mm512_cmple_epi64_mask(block, bcast);
+			mask = _mm512_cmple_epu64_mask(block, bcast);
+			// printf("in 64-bit case, popcount got %lu\n", __builtin_popcount(mask));
+			assert(__builtin_popcount(mask) <= keys_per_vector);
 		}
 		ret += __builtin_popcount(mask);
 	}
 
 	// TODO: can you do to the next line faster?
+	// printf("num blocks = %lu\n", num_blocks);
+	assert(ret <= num_blocks);
 	if (ret == num_blocks || blind_read_key(header_start + ret) > key) {
 		ret--;
 	}
 
-	ASSERT(ret == correct_ret, "got %lu, should be %lu\n", ret, correct_ret);
+	ASSERT(ret == correct_ret, "searching for key %lu: got %lu, should be %lu\n", key, ret, correct_ret);
 #endif
 #if DEBUG
 	i = header_start + hint;
@@ -849,11 +856,11 @@ unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count
 		if constexpr (std::is_same<key_type, uint32_t>::value) { // 32-bit keys
 			__m512i bcast = _mm512_set1_epi32(0);
 			__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + block_start * sizeof(key_type)));
-			mask = _mm512_cmpeq_epi32_mask(block, bcast);
+			mask = _mm512_cmpeq_epu32_mask(block, bcast);
 		} else {
 			__m512i bcast = _mm512_set1_epi64(0);
 			__m512i block = _mm512_loadu_si512((const __m512i *)(array.data() + block_start * sizeof(key_type)));
-			mask = _mm512_cmpeq_epi64_mask(block, bcast);
+			mask = _mm512_cmpeq_epu64_mask(block, bcast);
 		}
 		num_zeroes += __builtin_popcount(mask);
 	}
@@ -1418,8 +1425,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 // return N if not found, otherwise return the slot the key is at
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 inline size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index_in_blocks(key_type e) const {
+	// if there is no header / stuff in blocks, key is not there
 	// if less than current min, should not be in ds
-	if (e < blind_read_key(header_start)) {
+	if (blind_read_key(header_start) == 0 || e < blind_read_key(header_start)) {
 		return N;
 	}
 	assert( e >= blind_read_key(header_start) );
