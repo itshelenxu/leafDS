@@ -49,8 +49,10 @@ std::vector<T> create_random_data(size_t n,
   return v;
 }
 
+/*
 uint64_t get_usecs() {
   struct timeval st {};
   gettimeofday(&st, nullptr);
   return st.tv_sec * 1000000 + st.tv_usec;
 }
+*/

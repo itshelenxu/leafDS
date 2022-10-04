@@ -14,6 +14,7 @@
 #include <immintrin.h>
 #include <typeinfo>
 
+
 #if DEBUG==1
 #define ASSERT(PREDICATE, ...)                                                 \
   do {                                                                         \
@@ -30,6 +31,7 @@
 #endif
 
 #define STATS 0
+// #define DEBUG_PRINT 1
 
 static uint64_t one[128] = {
   1ULL << 0, 1ULL << 1, 1ULL << 2, 1ULL << 3, 1ULL << 4, 1ULL << 5, 1ULL << 6, 1ULL << 7, 1ULL << 8, 1ULL << 9,
@@ -151,8 +153,18 @@ private:
 
 	// max elts allowed in data structure before split
 	static constexpr size_t max_density = (int)( 9.0 / 10.0 * N );
+	static constexpr size_t min_density = (int)( 4.0 / 10.0 * N );
+
+public:
+	size_t get_num_elements() const { return num_elts_total; }
 
 	std::array<uint8_t, SOA_type::get_size_static(N)> array = {0};
+
+	key_type get_min_after_split() {
+		return blind_read_key(header_start);
+	}
+
+private:
 
   inline key_type get_key_array(uint32_t index) const {
     return std::get<0>(
@@ -175,6 +187,9 @@ public:
     printf("num redistributes = %u, vol redistributes %u\n", num_redistributes, vol_redistributes);
   }
 #endif
+
+public:
+  key_type split(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right);
 
 private:
 
@@ -218,6 +233,8 @@ private:
 public:
 	size_t get_num_elts() const { return num_elts_total; }
 	bool is_full() const { return num_elts_total >= max_density; }
+	bool is_few() const { return num_elts_total <= min_density; }
+
 	void print() const;
 
 	[[nodiscard]] uint64_t sum_keys() const;
@@ -236,6 +253,7 @@ public:
 
 	// whether elt e was in the DS
   [[nodiscard]] bool has(key_type e) const;
+  [[nodiscard]] bool has_with_print(key_type e) const;
 
   [[nodiscard]] size_t get_index_in_blocks(key_type e) const;
 
@@ -312,19 +330,19 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
   for(size_t i = 0; i < num_blocks; i++) {
     size_t num_to_flush = per_block + (i < remainder);
 #if DEBUG
-    assert(num_to_flush < block_size);
-		assert(num_to_flush >= 1);
+    ASSERT(num_to_flush < block_size, "to flush %lu, block size %lu\n", num_to_flush, block_size);
+    assert(num_to_flush >= 1);
 #endif
 #if DEBUG_PRINT
 		printf("block %u, num to flush %u\n", i, num_to_flush);
 #endif
     // write the header
     blind_write(buffer[num_so_far], header_start + i);
-    num_to_flush--;
-    num_so_far++;
 #if DEBUG_PRINT
 		printf("\tset buf[%u] = %u as header of block %u at pos %u\n", num_so_far, std::get<0>(buffer[num_so_far]), i, header_start + i);
 #endif
+    num_to_flush--;
+    num_so_far++;
     // write the rest into block
     size_t start = blocks_start + i * block_size;
     for(size_t j = 0; j < num_to_flush; j++) {
@@ -372,7 +390,7 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 	size_t start_of_cur_block = 0;
 	while(cur_block < num_blocks) {
 #if DEBUG
-		tbassert(blind_read_key(blocks_ptr) != NULL_VAL, "block ptr %lu\n", blocks_ptr);
+		ASSERT(blind_read_key(blocks_ptr) != NULL_VAL, "block ptr %lu\n", blocks_ptr);
 #endif
 #if DEBUG_PRINT
 		printf("added %u at idx %lu to buffer\n", blind_read_key(blocks_ptr), blocks_ptr);
@@ -397,7 +415,7 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 	// at this point the buffer should be sorted
 	for (size_t i = 1; i < buffer.size(); i++) {
 		assert(has(std::get<0>(buffer[i])));
-		tbassert(std::get<0>(buffer[i]) > std::get<0>(buffer[i-1]), "buffer[%lu] = %u, buffer[%lu] = %u\n", i-1, std::get<0>(buffer[i-1]), i, std::get<0>(buffer[i]));
+		ASSERT(std::get<0>(buffer[i]) > std::get<0>(buffer[i-1]), "buffer[%lu] = %u, buffer[%lu] = %u\n", i-1, std::get<0>(buffer[i-1]), i, std::get<0>(buffer[i]));
 	}
 #endif
 
@@ -413,6 +431,12 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 // TODO: count global redistributes 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... ts>
 void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistribute(element_type* log_to_flush, size_t num_to_flush, unsigned short* count_per_block) {
+#if DEBUG
+	// verify that the log to flush is sorted
+	for(size_t i = 1; i < num_to_flush; i++) {
+		assert(std::get<0>(log_to_flush[i-1]) < std::get<0>(log_to_flush[i]));
+	}
+#endif
 	// sort each block
 	// size_t end_blocks = 0;
 	for (size_t i = 0; i < num_blocks; i++) {
@@ -433,22 +457,36 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 	for(size_t i = 0; i < num_to_flush; i++) {
 		printf("%u\t", std::get<0>(log_to_flush[i]));
 	}
-	printf("\n");
+	printf("\n\n\n");
+	print();
 #endif
 
 	while(log_ptr < log_end && cur_block < num_blocks) {
+		assert(blocks_ptr < N);
+#if DEBUG_PRINT
+		printf("log ptr %lu, cur_block %lu, blocks_ptr %lu\n", log_ptr, cur_block, blocks_ptr);
+#endif
 		const key_type log_key = std::get<0>(log_to_flush[log_ptr]);
 		const key_type block_key = blind_read_key(blocks_ptr);
-#if DEBUG
 		assert(log_key != block_key);
-#endif
 		if (log_key < block_key) {
 #if DEBUG_PRINT
 			printf("pushed %u from log to buffer\n", std::get<0>(log_to_flush[log_ptr]));
 #endif
+#if DEBUG
+			if (buffer.size() >= 1) {		
+				assert(std::get<0>(buffer[buffer.size() - 1]) < std::get<0>(log_to_flush[log_ptr]));
+			}
+#endif
 			buffer.push_back(log_to_flush[log_ptr]);
 			log_ptr++;
 		} else {
+#if DEBUG
+			assert(blocks_ptr < N);
+			if (buffer.size() >= 1) {		
+				ASSERT(std::get<0>(buffer[buffer.size() - 1]) < blind_read_key(blocks_ptr), "buffer end %lu, blocks ptr %lu, blocks elt %lu\n", std::get<0>(buffer[buffer.size() - 1]), blocks_ptr, blind_read_key(blocks_ptr));
+			}
+#endif
 			buffer.push_back(blind_read(blocks_ptr));
 			advance_block_ptr(&blocks_ptr, &cur_block, &start_of_cur_block, count_per_block);
 		}
@@ -465,7 +503,7 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 #endif
 	while(cur_block < num_blocks) {
 #if DEBUG
-		tbassert(blind_read_key(blocks_ptr) != NULL_VAL, "block ptr %lu\n", blocks_ptr);
+		ASSERT(blind_read_key(blocks_ptr) != NULL_VAL, "block ptr %lu\n", blocks_ptr);
 #endif
 #if DEBUG_PRINT
 		printf("added %u at idx %lu to buffer\n", blind_read_key(blocks_ptr), blocks_ptr);
@@ -474,7 +512,7 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 		advance_block_ptr(&blocks_ptr, &cur_block, &start_of_cur_block, count_per_block);
 	}
 #if DEBUG
-	assert(buffer.size() < num_blocks * block_size);
+	ASSERT(buffer.size() <= header_size + num_blocks * block_size, "buffer size = %lu, blocks slots = %lu\n", buffer.size(), num_blocks * block_size);
 #endif
 	num_elts_total = buffer.size();
 
@@ -490,7 +528,7 @@ void LeafDS<log_size, header_size, block_size, key_type, ts...>::global_redistri
 	// at this point the buffer should be sorted
 	for (size_t i = 1; i < buffer.size(); i++) {
 		assert(has(std::get<0>(buffer[i])));
-		tbassert(std::get<0>(buffer[i]) > std::get<0>(buffer[i-1]), "buffer[%lu] = %u, buffer[%lu] = %u\n", i-1, std::get<0>(buffer[i-1]), i, std::get<0>(buffer[i]));
+		ASSERT(std::get<0>(buffer[i]) > std::get<0>(buffer[i-1]), "buffer[%lu] = %u, buffer[%lu] = %u\n", i-1, std::get<0>(buffer[i-1]), i, std::get<0>(buffer[i]));
 	}
 #endif
 
@@ -511,10 +549,10 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block(ke
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_with_hint(key_type key, size_t hint) const {
 
-#if DEBUG
+#if DEBUG || VALGRIND
 	// scalar version for debug
 	size_t i = header_start + hint;
-	assert(key >= blind_read_key(i));
+	ASSERT(key >= blind_read_key(i), "key = %lu, start block = %lu, header key = %lu\n", key, hint, blind_read_key(i));
 	size_t correct_ret = hint;
 
 	for( ; i < blocks_start; i++) {
@@ -523,8 +561,11 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_wi
 	if (correct_ret == num_blocks || blind_read_key(header_start + correct_ret) > key) {
 		correct_ret--;
 	}
+#if VALGRIND
+	return correct_ret;
 #endif
-
+#endif
+#if !VALGRIND
 	// vector version
 	size_t vector_start = header_start;
 	size_t vector_end = blocks_start;
@@ -548,8 +589,8 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_wi
 		ret--;
 	}
 
-
 	ASSERT(ret == correct_ret, "got %lu, should be %lu\n", ret, correct_ret);
+#endif
 #if DEBUG
 	i = header_start + hint;
 	for( ; i < blocks_start; i++) {
@@ -560,11 +601,11 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_wi
 		}
 	}
 	assert(i - header_start - 1 < num_blocks);
-	assert(i - header_start - 1 == ret);
-	// printf("elt %lu, original found %lu, new is %lu\n", key, i - header_start - 1, ret);
+	ASSERT(i - header_start - 1 == ret, "elt %lu, original found %lu, new is %lu\n", key, i - header_start - 1, ret);
 #endif
-
+#if !VALGRIND
 	return ret;
+#endif
 }
 
 // given a src, dest indices 
@@ -626,7 +667,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 
 	[[maybe_unused]] bool correct_answer = false;
 	[[maybe_unused]] size_t test_i = start;
-#if DEBUG
+#if DEBUG || VALGRIND
 	// scalar version for correctness
 	const key_type key = std::get<0>(e);
 
@@ -643,7 +684,11 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 			break;
 		}
 	}
+#if VALGRIND
+	return correct_answer;
 #endif
+#endif
+#if !VALGRIND
 	// vector version
 	if constexpr (type == BLOCK) {
 		assert(start % keys_per_vector == 0);
@@ -743,6 +788,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 
 	ASSERT((correct_answer == false), "searching for key %u in range [%lu, %lu)\n", std::get<0>(e), start, end);
 	return false;
+#endif
 } 
 
 // (only used in delete)
@@ -775,7 +821,7 @@ inline std::pair<size_t, size_t> LeafDS<log_size, header_size, block_size, key_t
 	size_t block_start = blocks_start + block_idx * block_size;
 	size_t block_end = block_start + block_size;
 #if DEBUG
-	tbassert(block_idx < num_blocks, "block idx %lu\n", block_idx);
+	ASSERT(block_idx < num_blocks, "block idx %lu\n", block_idx);
 	assert(block_start < N);
 	assert(block_end <= N);
 #endif
@@ -788,12 +834,15 @@ unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count
 	size_t block_start = blocks_start + block_idx * block_size;
 	size_t block_end = block_start + block_size;
 
-#if DEBUG
+#if DEBUG || VALGRIND
 	// count number of nonzero elts in this block
 	uint64_t correct_count = 0;
 	SOA_type::template map_range_static(array.data(), N, [&correct_count](auto key) {correct_count += key != 0;}, block_start, block_end);
+#if VALGRIND
+	return correct_count;
 #endif
-
+#endif
+#if !VALGRIND
 	uint64_t num_zeroes = 0;
 	mask_type mask;
 	for(; block_start < block_end; block_start += keys_per_vector) {
@@ -815,6 +864,7 @@ unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count
 
 	ASSERT(correct_count == count, "counting block %lu, got count %lu, should be %lu\n", block_idx, count, correct_count);
 	return count;
+#endif
 }
 
 // flush the log to the blocks
@@ -838,7 +888,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 		key_type key_to_flush = blind_read_key(i);
 
 #if DEBUG
-		assert(key_to_flush >= blind_read_key(log_size));
+		ASSERT(key_to_flush >= blind_read_key(header_start), "key to flush = %lu, first header = %lu\n", key_to_flush, blind_read_key(header_start));
 #endif
 
 		size_t block_idx = find_block_with_hint(key_to_flush, hint);
@@ -865,7 +915,8 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 			if (!update_block) {
 				// if not found, the second thing in the pair is the index at the end
 #if DEBUG_PRINT
-				printf("\tflushing elt %u to block %lu, header %u\n", blind_read_key(i), block_idx, blind_read_key(header_start + block_idx));
+				printf("\tflushing elt %u to block %lu, header %lu\n", blind_read_key(i), block_idx, blind_read_key(header_start + block_idx));
+				printf("set log_to_flush[%lu] = %lu\n", num_to_flush, blind_read_key(i));
 #endif
 				log_to_flush[num_to_flush] = blind_read(i);
 				num_to_flush++;
@@ -897,7 +948,6 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 #if DEBUG_PRINT
 			printf("*** GLOBAL REDISTRIB FROM OVERFLOW ***\n");
 			printf("at block %lu, count_per_block = %u, num to flush = %u\n", i, count_per_block[i], num_to_flush_per_block[i]);
-			print();
 #endif
 		}
 	}
@@ -918,7 +968,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 	}
 
 #if DEBUG
-	tbassert(idx_in_log == num_to_flush, "flushed %lu, should have flushed %u\n", idx_in_log, num_to_flush);
+	ASSERT(idx_in_log == num_to_flush, "flushed %lu, should have flushed %u\n", idx_in_log, num_to_flush);
 #endif
 
 #if DEBUG_PRINT
@@ -972,6 +1022,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::delete_from_blo
 // may return true if the element was already there due to it being a pseudo-set
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_type e) {
+	assert(std::get<0>(e) != 0);
 	// first try to update the key if it is in the log
 	auto result = update_in_range_if_exists<INSERTS>(0, num_inserts_in_log, e);
 	if (result) { 
@@ -1036,7 +1087,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 					}
 				}, blocks_start, blocks_start + block_size);
 #if DEBUG
-				tbassert(i == j, "got %zu, should be %zu\n", j, i);
+				ASSERT(i == j, "got %zu, should be %zu\n", j, i);
 				assert(i < blocks_start + block_size);
 #endif
 
@@ -1076,7 +1127,7 @@ inline void LeafDS<log_size, header_size, block_size, key_type, Ts...>::advance_
 			printf("null blocks ptr %lu\n", blocks_ptr);
 			assert(false);
 		}
-		printf("pushed %u from blocks to buffer\n", blind_read_key(*blocks_ptr));
+		printf("\tpushed %u from blocks to buffer\n", blind_read_key(*blocks_ptr));
 #endif
 #if DEBUG
 		size_t prev_blocks_ptr = *blocks_ptr;
@@ -1422,15 +1473,34 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::has(key_type e)
 	// first check if it is in the delete log
 	for(size_t i = log_size; i > log_size - num_deletes_in_log; i--) {
 		if(blind_read_key(i) == e) {
-			printf("found %u in delete log\n", e);
+			// printf("found %u in delete log\n", e);
+			// print();
 			return false;
 		}
 	}
 	
 	// otherwise search in insert log and rest of DS
-	return (get_index(e) != N);
+	auto idx = get_index(e);
+	return (idx != N);
 }
 
+// return true iff element exists in the data structure
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::has_with_print(key_type e) const {
+	// first check if it is in the delete log
+	for(size_t i = log_size; i > log_size - num_deletes_in_log; i--) {
+		if(blind_read_key(i) == e) {
+			printf("found %u in delete log\n", e);
+			print();
+			return false;
+		}
+	}
+	
+	// otherwise search in insert log and rest of DS
+	auto idx = get_index(e);
+	if (idx == N) { printf("%lu not found\n", e); print(); }
+	return (idx != N);
+}
 // print the range [start, end)
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print_range(size_t start, size_t end) const {
@@ -1473,7 +1543,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::print() const {
 	print_range(header_start, blocks_start);
 
 	for (uint32_t i = blocks_start; i < N; i += block_size) {
-		printf("\nblock %lu\n", (i - blocks_start) / block_size);
+		printf("\nblock %lu (header = %lu)\n", (i - blocks_start) / block_size, blind_read_key(header_start + (i - blocks_start) / block_size));
 		print_range(i, i + block_size);
 	}
 	printf("\n");
@@ -1600,4 +1670,156 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_di
 		result -= blind_read_key(skip_index[i]);
 	}
   return result;
+}
+
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+key_type LeafDS<log_size, header_size, block_size, key_type, Ts...>::split(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right) {
+#if DEBUG_PRINT
+	printf("\n*** SPLIT ***\n");
+	print();
+#endif
+	// flush log to blocks
+	sort_range(0, num_inserts_in_log);
+
+	if (num_inserts_in_log > 0 && blind_read_key(0) < get_min_block_key()) {
+#if DEBUG_PRINT
+		printf("first key in log = %lu, min block key = %lu\n", blind_read_key(0), get_min_block_key());
+#endif
+		size_t j = blocks_start + block_size;
+		// find the first zero slot in the block
+		SOA_type::template map_range_with_index_static(array.data(), N, [&j](auto index, auto key) {
+			if (key == 0) {
+				j = std::min(index, j);
+			}
+		}, blocks_start, blocks_start + block_size);
+#if DEBUG_PRINT
+		printf("first empty slot = %lu\n", j);
+		print();
+#endif
+
+		// put the old min header in the block where it belongs
+		// src = header start, dest = i
+		copy_src_to_dest(header_start, j);
+		// make min elt the new first header
+		copy_src_to_dest(0, header_start);
+	}
+
+	flush_log_to_blocks(num_inserts_in_log);
+	num_inserts_in_log = 0;
+
+	// sort blocks
+	// count the number of elements in each block
+	unsigned short count_per_block[num_blocks];
+	for (size_t i = 0; i < num_blocks; i++) {
+		count_per_block[i] = count_block(i);
+	}
+
+	// sort the blocks
+	for (size_t i = 0; i < num_blocks; i++) {
+		auto block_range = get_block_range(i);
+		sort_range(block_range.first, block_range.first + count_per_block[i]);
+	}
+
+	// merge all elts into sorted order
+	std::vector<element_type> buffer;
+	size_t blocks_ptr = header_start;
+	size_t cur_block = 0;
+	size_t start_of_cur_block = 0;
+	while(cur_block < num_blocks) {
+#if DEBUG
+		ASSERT(blind_read_key(blocks_ptr) != NULL_VAL, "block ptr %lu\n", blocks_ptr);
+#endif
+		
+		buffer.push_back(blind_read(blocks_ptr));
+		advance_block_ptr(&blocks_ptr, &cur_block, &start_of_cur_block, count_per_block);
+	}
+#if DEBUG
+	assert(buffer.size() < num_blocks * block_size);
+#endif
+	num_elts_total = buffer.size();
+
+#if DEBUG_PRINT
+	printf("*** BUFFER ***\n");
+	for(size_t i = 0; i < buffer.size(); i++) {
+		printf("%u\t", std::get<0>(buffer[i]));
+	}
+	printf("\n");
+#endif
+
+#if DEBUG
+	// at this point the buffer should be sorted
+	for (size_t i = 1; i < buffer.size(); i++) {
+		assert(has(std::get<0>(buffer[i])));
+		ASSERT(std::get<0>(buffer[i]) > std::get<0>(buffer[i-1]), "buffer[%lu] = %u, buffer[%lu] = %u\n", i-1, std::get<0>(buffer[i-1]), i, std::get<0>(buffer[i]));
+	}
+#endif
+	clear_range(0, N);
+
+	// pick a midpoint to return
+#if DEBUG_PRINT
+	printf("buffer size = %lu\n", buffer.size());
+#endif
+	size_t midpoint = buffer.size() / 2;	
+	size_t left_size = midpoint;
+	size_t elts_per_block = left_size / num_blocks;
+	size_t remainder = left_size % num_blocks;
+	// put the first half of the array into left, put the second half into right
+	int cur_idx = 0;
+	size_t idx_in_block = 0;
+#if DEBUG_PRINT
+  printf("left size = %lu, elts per block = %lu, remainder = %lu\n", left_size, elts_per_block, remainder);
+#endif
+	for(size_t i = 0; i < num_blocks; i++) {
+		assert(cur_idx < left_size);
+		blind_write(buffer[cur_idx], header_start + i);
+#if DEBUG_PRINT
+		printf("\twrote buffer[%lu] = %lu as header %lu\n", cur_idx, std::get<0>(buffer[cur_idx]), i);
+#endif
+		size_t j;
+		for(j = 1; j < elts_per_block + (i < remainder); j++) {
+#if DEBUG_PRINT
+			printf("\twrote buffer[%lu] = %lu at position %lu \n", cur_idx + j, std::get<0>(buffer[cur_idx + j]), blocks_start + i*block_size + j -1);	
+#endif
+			blind_write(buffer[cur_idx + j], blocks_start + i * block_size + j - 1);
+		}
+		cur_idx += j;
+#if DEBUG_PRINT
+		printf("cur idx at end of left loop %lu\n", cur_idx);
+#endif
+	}
+
+	num_elts_total = left_size;
+	// do the same for right side
+	size_t right_size = buffer.size() - midpoint;
+	elts_per_block = right_size / num_blocks;	
+	remainder = right_size % num_blocks;
+#if DEBUG_PRINT	
+	printf("right size = %lu, elts per block = %lu\n", left_size, elts_per_block);
+#endif
+	for(size_t i = 0; i < num_blocks; i++) {
+		assert(cur_idx < buffer.size());
+		right->blind_write(buffer[cur_idx], header_start + i);
+		size_t j;
+		for(j = 1; j < elts_per_block + (i < remainder); j++) {
+			right->blind_write(buffer[cur_idx + j], blocks_start + i * block_size + j - 1);
+		}
+		cur_idx += j;
+#if DEBUG_PRINT
+		printf("cur idx at end of right loop = %lu\n", cur_idx);
+#endif
+	}
+	assert(cur_idx == buffer.size());
+	right->num_elts_total = right_size;
+
+	// end
+	key_type mid_elt = std::get<0>(buffer[midpoint - 1]);
+#if DEBUG_PRINT
+	printf("mid elt = %lu\n", mid_elt);
+	printf("\n\n**LEFT**\n");
+	print();
+	printf("\n\n**RIGHT**\n");
+	right->print();
+#endif
+
+	return mid_elt;
 }
