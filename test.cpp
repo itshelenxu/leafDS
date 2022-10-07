@@ -543,7 +543,6 @@
     elts.push_back(el);
   }
 
-  uint64_t start, end;
   for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
     // do inserts
     std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type>> dsv(num_copies);
@@ -586,40 +585,40 @@
     std::vector<key_type> starts;
     std::vector<size_t> lengths;
     std::mt19937 rng_query(1);
-    for(int i = 0; i < num_queries; i++) {
-            starts.push_back(dist_el(rng_query));
-            lengths.push_back(dist_len(rng_query));
+    for(size_t i = 0; i < num_queries; i++) {
+      starts.push_back(dist_el(rng_query));
+      lengths.push_back(dist_len(rng_query));
     }
 
     cilk_for(uint32_t i = 0; i < num_copies; i++) {
       for(uint32_t j = 0; j < num_queries; j++) {
-              // do the correct version in sorted vector
-              size_t idx = 0;
-              while(idx < vectors[i].size() && vectors[i][idx] < starts[j]) {
+        // do the correct version in sorted vector
+        size_t idx = 0;
+        while(idx < vectors[i].size() && vectors[i][idx] < starts[j]) {
+          idx++;
+        }
+        std::vector<key_type> correct_range;
+        while(correct_range.size() < lengths[j] && idx < vectors[i].size()) {
+                assert(vectors[i][idx] >= starts[j]);
+                correct_range.push_back(vectors[i][idx]);
                 idx++;
-              }
-              std::vector<key_type> correct_range;
-              while(correct_range.size() < lengths[j] && idx < vectors[i].size()) {
-                      assert(vectors[i][idx] >= starts[j]);
-                      correct_range.push_back(vectors[i][idx]);
-                      idx++;
-              }
-              auto test_range = dsv[i].sorted_range(starts[j], lengths[j]);
-              if (test_range.size() != correct_range.size()) {
-		      printf("\n");
-		      for(size_t k = 0; k < test_range.size(); k++) {
-			      printf("test_output[%lu] = %lu\n", k, std::get<0>(test_range[k]));
-		      }
-		      for(size_t k = 0; k < correct_range.size(); k++) {
-			      printf("correct_output[%lu] = %lu\n", k, correct_range[k]);
-		      }
+        }
+        auto test_range = dsv[i].sorted_range(starts[j], lengths[j]);
+        if (test_range.size() != correct_range.size()) {
+          printf("\n");
+          for(size_t k = 0; k < test_range.size(); k++) {
+            printf("test_output[%lu] = %lu\n", k, std::get<0>(test_range[k]));
+          }
+          for(size_t k = 0; k < correct_range.size(); k++) {
+            printf("correct_output[%lu] = %lu\n", k, correct_range[k]);
+          }
 
-		      dsv[i].print();
-		      assert(test_range.size() == correct_range.size());
-	      }
-              for(uint32_t k = 0; k < test_range.size(); k++) {
-                assert(std::get<0>(test_range[k]) == correct_range[k]);
-              } 
+          dsv[i].print();
+          assert(test_range.size() == correct_range.size());
+        }
+        for(uint32_t k = 0; k < test_range.size(); k++) {
+          assert(std::get<0>(test_range[k]) == correct_range[k]);
+        } 
       }
     }
   }
@@ -638,7 +637,6 @@
     elts.push_back(el);
   }
 
-  uint64_t start, end;
   for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
     // do inserts
     std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type>> dsv(num_copies);
@@ -686,27 +684,27 @@
 	      start = std::min(a, b);
 	      end = std::max(a, b);
 
-	      printf("doing query %u in range [%lu, %lu]\n", j, start, end);
+	      // printf("doing query %u in range [%lu, %lu]\n", j, start, end);
 	      // first do the range on 
-              size_t idx = 0;
-              while(idx < vectors[copy].size() && vectors[copy][idx] < start) {
-                idx++;
-              }
-	      
+        size_t idx = 0;
+        while(idx < vectors[copy].size() && vectors[copy][idx] < start) {
+          idx++;
+        }
+      
 	      // make a set for the correct range
-              std::vector<key_type> correct_range;
-              while(idx < vectors[copy].size() && vectors[copy][idx] <= end) {
-                      assert(vectors[copy][idx] >= start);
-		      assert(vectors[copy][idx] <= end);
-		      // printf("correct[%lu] = %lu\n", correct_range.size(), vectors[i][idx]);
-                      correct_range.push_back(vectors[copy][idx]);
-                      idx++;
-              }
+        std::vector<key_type> correct_range;
+        while(idx < vectors[copy].size() && vectors[copy][idx] <= end) {
+                assert(vectors[copy][idx] >= start);
+                assert(vectors[copy][idx] <= end);
+                correct_range.push_back(vectors[copy][idx]);
+                idx++;
+        }
 
-              auto test_range = dsv[copy].unsorted_range(start, end);
-	      // make a set for the test thing
+        auto test_range = dsv[copy].unsorted_range(start, end);
 
-	      printf("\tcorrect got %lu elts, test got %lu elts\n", correct_range.size(), test_range.size());
+	      // printf("\tcorrect got %lu elts, test got %lu elts\n", correct_range.size(), test_range.size());
+
+	      assert(test_range.size() == correct_range.size());
 	      std::sort(test_range.begin(), test_range.end());
 	      size_t i = 0;
 	      for(i = 0; i < correct_range.size(); i++) {
@@ -714,13 +712,12 @@
 			      dsv[0].print();
 		      }
 		      tbassert(std::get<0>(test_range[i]) == correct_range[i], "test[%lu] = %lu, correct[%lu] = %lu\n", i, std::get<0>(test_range[i]), i, correct_range[i]);
-		      printf("test[%lu] = %lu, correct[%lu] = %lu\n", i, std::get<0>(test_range[i]), i, correct_range[i]);
+		      // printf("test[%lu] = %lu, correct[%lu] = %lu\n", i, std::get<0>(test_range[i]), i, correct_range[i]);
 	      }
 	      while(i < test_range.size()) {
-		      printf("remaining test[%lu] = %u\n", i, std::get<0>(test_range[i]));
+		      // printf("remaining test[%lu] = %u\n", i, std::get<0>(test_range[i]));
 		      i++;
 	      }
-	      assert(test_range.size() == correct_range.size());
       }
     }
   }
@@ -737,56 +734,80 @@
   
   return 0;
 }
-[[nodiscard]] int insert_delete_templated(uint32_t el_count,
-                                            bool check = false) {
 
+[[nodiscard]] int insert_delete_templated(uint32_t el_count) {
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds;
   std::mt19937 rng(0);
   std::uniform_int_distribution<key_type> dist_el(1, N * 16);
 
-  std::unordered_set<key_type> checker;
+  std::vector<key_type> checker;
+  checker.reserve(el_count);
   std::vector<key_type> elts;
 
   // add some elements
   for (uint32_t i = 0; i < el_count; i++) {
     key_type el = dist_el(rng);
     elts.push_back(el);
+    // add to leafDS
     ds.insert(el);
-    if (check) {
-      checker.insert(el);
-      if (!ds.has(el)) {
-        ds.print();
-        printf("don't have something, %lu, we inserted while inserting "
-               "elements\n",
-               el);
-        return -1;
+
+    // add to sorted vector
+    size_t idx = 0;
+    for(; idx < checker.size(); idx++) {
+      if(checker[idx] == el) {
+        break;
+      } else if (checker[idx] > el) {
+        break;
       }
     }
-  } 
+    if(checker.size() == 0 || checker[idx] != el) {
+      checker.insert(checker.begin() + idx, el);
+    }
 
+    if (!ds.has(el)) {
+      ds.print();
+      printf("don't have something, %lu, we inserted while inserting "
+             "elements\n",
+             el);
+      return -1;
+    }
+  } 
+  printf("\n*** finished inserting elts ***\n");
+  printf("num elts = %lu\n", checker.size());
   // then remove all the stuff we added
   for (auto el : elts) {
     ds.remove(el);
-    if (check) {
-      checker.erase(el);
-      if (ds.has(el)) {
-        ds.print();
-        printf("has %lu but should have deleted\n", el);
-        return -1;
-      }
+
+    size_t i = 0;
+    for(; i < checker.size(); i++) {
+	    if (checker[i] == el) {
+		    break;
+	    }
     }
-  }
+    if(i < checker.size()) {
+	    tbassert(i < checker.size(), "el = %lu, i == checker_size == %lu\n", el, checker.size());
+	    tbassert(checker[i] == el, "checker[%lu] = %lu, el = %lu\n", i, checker[i], el);
+	    checker.erase(checker.begin() + i);
+	    printf("\tdeleting elt %lu (checker[%lu] = %lu) from vector\n", el, i, checker[i]);
+	    printf("\tafter delete, num elts in vector = %lu\n", checker.size());
+    }
+    if (ds.has(el)) {
+      ds.print();
+      printf("has %lu but should have deleted\n", el);
+      assert(false);
+      return -1;
+    }
+		
+    // check with sum
+    uint64_t sum = ds.sum_keys_with_map();
+    uint64_t sum_direct = ds.sum_keys_direct();
 
-  // check with sum
-  uint64_t sum = ds.sum_keys_with_map();
-  uint64_t sum_direct = ds.sum_keys_direct();
-
-  if (check) {
     uint64_t correct_sum = 0;
     for (auto elt : checker) {
       correct_sum += elt;
     }
     printf("correct sum %lu\n", correct_sum);
+
     if (correct_sum != sum) {
       ds.print();
       printf("incorrect sum keys with map\n");
@@ -797,16 +818,19 @@
       printf("incorrect sum keys with subtraction\n");
       tbassert(correct_sum == sum_direct, "got sum %lu, should be %lu\n", sum_direct, correct_sum);
     }
+    printf("got sum %lu\n", sum);
+    printf("got sum direct %lu\n", sum_direct);
+
+    // do range queries and check them against sorted list
   }
-  printf("got sum %lu\n", sum);
-  printf("got sum direct %lu\n", sum_direct);
+
   return 0;
 }
 
 
-[[nodiscard]] int insert_delete_test(uint32_t el_count, bool check = false) {
+[[nodiscard]] int insert_delete_test(uint32_t el_count) {
   int r = 0;
-  r = insert_delete_templated(el_count, check);
+  r = insert_delete_templated(el_count);
   if (r) {
     return r;
   }
@@ -1056,8 +1080,9 @@ int main(int argc, char *argv[]) {
     return update_test(el_count, verify);
   }
 
+  // always verify
   if (result["insert_delete_test"].as<bool>()) {
-    return insert_delete_test(el_count, verify);
+    return insert_delete_test(el_count);
   }
   if (result["update_values_test"].as<bool>()) {
     return update_values_test(el_count, verify);
