@@ -532,7 +532,7 @@
   return 0;
 }
 
-[[nodiscard]] int range_query_test(uint32_t el_count, uint32_t num_copies, uint32_t num_queries, uint32_t max_query_size) {
+[[nodiscard]] int sorted_range_query_test(uint32_t el_count, uint32_t num_copies, uint32_t num_queries, uint32_t max_query_size) {
   // prefill the input
   std::uniform_int_distribution<key_type> dist_el(1, 1088 * 16);
   std::vector<key_type> elts;
@@ -619,7 +619,100 @@
 	      }
               for(uint32_t k = 0; k < test_range.size(); k++) {
                 assert(std::get<0>(test_range[k]) == correct_range[k]);
+              } 
+      }
+    }
+  }
+
+  return 0;
+}
+
+[[nodiscard]] int unsorted_range_query_test(uint32_t el_count, uint32_t num_copies, uint32_t num_queries) {
+  // prefill the input
+  std::uniform_int_distribution<key_type> dist_el(1, 1088 * 16);
+  std::vector<key_type> elts;
+
+  std::mt19937 rng(0);
+  for (uint32_t j = 0; j < el_count; j++) {
+    key_type el = dist_el(rng);
+    elts.push_back(el);
+  }
+
+  uint64_t start, end;
+  for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
+    // do inserts
+    std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type>> dsv(num_copies);
+    std::vector<std::vector<key_type>> vectors(num_copies);
+    for(uint32_t i = 0; i < num_copies; i++) {
+      vectors[i].reserve(el_count);
+    }
+    // prefill the input
+    std::uniform_int_distribution<key_type> dist_el(1, 1088 * 16);
+    std::mt19937 rng(0);
+    for (uint32_t j = 0; j < el_count; j++) {
+      key_type el = dist_el(rng);
+      elts.push_back(el);
+    }
+
+    cilk_for(uint32_t i = 0; i < num_copies; i++) {
+      for (uint32_t j = 0; j < el_count; j++) {
+        key_type el = elts[j];
+        
+        // add to leafDS
+        dsv[i].insert(el);
+
+        // add to sorted vector
+        size_t idx = 0;
+        for(; idx < vectors[i].size(); idx++) {
+          if(vectors[i][idx] == el) {
+            break;
+          } else if (vectors[i][idx] > el) {
+            break;
+          }
+        }
+        if(vectors[i].size() == 0 || vectors[i][idx] != el) {
+          vectors[i].insert(vectors[i].begin() + idx, el);
+        }
+      }
+    }
+
+    // do unsorted range queries
+    key_type start, end;
+    cilk_for(uint32_t i = 0; i < num_copies; i++) {
+      for(uint32_t j = 0; j < num_queries; j++) {
+              // do the correct version in sorted vector
+	      key_type a = dist_el(rng);
+	      key_type b = dist_el(rng);
+	      start = std::min(a, b);
+	      end = std::max(a, b);
+
+	      printf("doing query %u in range [%lu, %lu]\n", j, start, end);
+	      // first do the range on 
+              size_t idx = 0;
+              while(idx < vectors[i].size() && vectors[i][idx] < start) {
+                idx++;
               }
+	      
+	      // make a set for the correct range
+              std::set<key_type> correct_range;
+              while(idx < vectors[i].size() && vectors[i][idx] <= end) {
+                      assert(vectors[i][idx] >= start);
+		      assert(vectors[i][idx] <= end);
+                      correct_range.insert(vectors[i][idx]);
+                      idx++;
+              }
+
+              auto test_range = dsv[i].unsorted_range(start, end);
+	      // make a set for the test thing
+	      std::set<key_type> test_set;
+	      printf("\tcorrect got %lu elts, test got %lu elts\n", correct_range.size(), test_set.size());
+	      
+	      for(size_t k = 0; k < test_range.size(); k++) {
+		      assert(!test_set.count(test_range[k])); // no repetitions in output
+		      test_set.insert(std::get<0>(test_range[k]));
+	      }
+	      assert(test_range.size() == test_set.size());
+	      assert(test_set == correct_range);
       }
     }
   }
@@ -939,7 +1032,8 @@ int main(int argc, char *argv[]) {
     ("parallel_test", "time to do parallel test")
     ("parallel_test_perf", "just leafDS copies for perf")
     ("update_values_test", "time updating with values")
-    ("range_query_test", "time updating with values");
+    ("unsorted_range_query_test", "time updating with values")
+    ("sorted_range_query_test", "time updating with values");
     // ("help","Print help");
   // clang-format on
 
@@ -965,8 +1059,12 @@ int main(int argc, char *argv[]) {
     return parallel_test(el_count, num_copies, 1.0);
   }
 
-  if (result["range_query_test"].as<bool>()) {
-    return range_query_test(el_count, num_copies, 100, 100);
+  if (result["sorted_range_query_test"].as<bool>()) {
+    return sorted_range_query_test(el_count, num_copies, 100, 100);
+  }
+
+  if (result["unsorted_range_query_test"].as<bool>()) {
+    return unsorted_range_query_test(el_count, num_copies, 100);
   }
 
   if (result["parallel_test_perf"].as<bool>()) {

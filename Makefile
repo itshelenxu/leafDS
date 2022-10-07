@@ -1,13 +1,14 @@
 OPT?=3
-VALGRIND?=0
 SANITIZE?=0
 CILK?=0
 DEBUG?=0
+AVX512?=0
 
+CXX=clang++
 #CXX=g++-11
-CXX=../OpenCilk-10.0.1-Linux/bin/clang++
+#CXX=../OpenCilk-10.0.1-Linux/bin/clang++
 
-CFLAGS := -Wall -Wno-address-of-packed-member -Wextra -O$(OPT) -gdwarf-4  -std=c++20 -ftemplate-backtrace-limit=0 -DDEBUG=$(DEBUG)
+CFLAGS := -Wall -Wno-address-of-packed-member -Wextra -O$(OPT) -gdwarf-4  -std=c++20 -ftemplate-backtrace-limit=0 -ferror-limit=1
 
 LDFLAGS := 
 
@@ -27,11 +28,11 @@ ifeq ($(OPT),3)
 CFLAGS += -fno-signed-zeros  -freciprocal-math -ffp-contract=fast -fno-trapping-math  -ffinite-math-only 
 endif
 
-ifeq ($(VALGRIND),0)
+ifeq ($(AVX512),1)
 CFLAGS += -march=native
-# CFLAGS += -msse -msse2 -msse3 -mssse3 -mavx512f -mavx512cd
-#-msse -msse2 #-march=native #-static
 endif
+
+DEFINES := -DCILK=$(CILK) -DDEBUG=$(DEBUG) -DAVX512=$(AVX512)
 
 VERIFY_COUNT ?= 1000
 
