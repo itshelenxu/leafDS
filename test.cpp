@@ -1,5 +1,5 @@
 // main test driver for leafDS
-#define DEBUG_PRINT 0
+// #define DEBUG_PRINT 0
 
 #include "tbassert.h"
 #include "cxxopts.hpp"
@@ -678,7 +678,7 @@
 
     // do unsorted range queries
     key_type start, end;
-    cilk_for(uint32_t i = 0; i < num_copies; i++) {
+    cilk_for(uint32_t copy = 0; copy < num_copies; copy++) {
       for(uint32_t j = 0; j < num_queries; j++) {
               // do the correct version in sorted vector
 	      key_type a = dist_el(rng);
@@ -689,30 +689,38 @@
 	      printf("doing query %u in range [%lu, %lu]\n", j, start, end);
 	      // first do the range on 
               size_t idx = 0;
-              while(idx < vectors[i].size() && vectors[i][idx] < start) {
+              while(idx < vectors[copy].size() && vectors[copy][idx] < start) {
                 idx++;
               }
 	      
 	      // make a set for the correct range
-              std::set<key_type> correct_range;
-              while(idx < vectors[i].size() && vectors[i][idx] <= end) {
-                      assert(vectors[i][idx] >= start);
-		      assert(vectors[i][idx] <= end);
-                      correct_range.insert(vectors[i][idx]);
+              std::vector<key_type> correct_range;
+              while(idx < vectors[copy].size() && vectors[copy][idx] <= end) {
+                      assert(vectors[copy][idx] >= start);
+		      assert(vectors[copy][idx] <= end);
+		      // printf("correct[%lu] = %lu\n", correct_range.size(), vectors[i][idx]);
+                      correct_range.push_back(vectors[copy][idx]);
                       idx++;
               }
 
-              auto test_range = dsv[i].unsorted_range(start, end);
+              auto test_range = dsv[copy].unsorted_range(start, end);
 	      // make a set for the test thing
-	      std::set<key_type> test_set;
-	      printf("\tcorrect got %lu elts, test got %lu elts\n", correct_range.size(), test_set.size());
-	      
-	      for(size_t k = 0; k < test_range.size(); k++) {
-		      assert(!test_set.count(test_range[k])); // no repetitions in output
-		      test_set.insert(std::get<0>(test_range[k]));
+
+	      printf("\tcorrect got %lu elts, test got %lu elts\n", correct_range.size(), test_range.size());
+	      std::sort(test_range.begin(), test_range.end());
+	      size_t i = 0;
+	      for(i = 0; i < correct_range.size(); i++) {
+		      if (std::get<0>(test_range[i]) != correct_range[i]) {
+			      dsv[0].print();
+		      }
+		      tbassert(std::get<0>(test_range[i]) == correct_range[i], "test[%lu] = %lu, correct[%lu] = %lu\n", i, std::get<0>(test_range[i]), i, correct_range[i]);
+		      printf("test[%lu] = %lu, correct[%lu] = %lu\n", i, std::get<0>(test_range[i]), i, correct_range[i]);
 	      }
-	      assert(test_range.size() == test_set.size());
-	      assert(test_set == correct_range);
+	      while(i < test_range.size()) {
+		      printf("remaining test[%lu] = %u\n", i, std::get<0>(test_range[i]));
+		      i++;
+	      }
+	      assert(test_range.size() == correct_range.size());
       }
     }
   }
