@@ -31,7 +31,7 @@
 #endif
 
 #define STATS 0
-#define DEBUG_PRINT 1
+#define DEBUG_PRINT 0
 
 static uint64_t one[128] = {
   1ULL << 0, 1ULL << 1, 1ULL << 2, 1ULL << 3, 1ULL << 4, 1ULL << 5, 1ULL << 6, 1ULL << 7, 1ULL << 8, 1ULL << 9,
@@ -1238,8 +1238,10 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_deletes_t
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::strip_deletes_and_redistrib() {
   // count the number of elements in each block
+#if DEBUG_PRINT
   printf("\nstrip deletes and redistrib, num deletes = %lu\n", num_deletes_in_log);
   print();
+#endif
   unsigned short count_per_block[num_blocks];
   size_t total_count = 0;
   for (size_t i = 0; i < num_blocks; i++) {
@@ -1440,8 +1442,10 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 
 	// now check if the log is full
 	if (num_deletes_in_log + num_inserts_in_log == log_size) {
+#if DEBUG_PRINT
 		printf("flushing delete log because full\n");
 		print();
+#endif
 		// if the header is empty, the deletes just disappear
 		// only do the flushing if there is stuff later in the DS
 		printf("\tmin block key = %lu\n", get_min_block_key());
@@ -1455,7 +1459,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 				// strip deletes and redistrib
 				strip_deletes_and_redistrib();
 			} else {
+#if DEBUG_PRINT
 				printf("\tflush deletes to blocks\n");
+#endif
 				flush_deletes_to_blocks();
 			}
 		}
@@ -1523,11 +1529,15 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_index(key
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::has(key_type e) const {
 	// first check if it is in the delete log
+#if DEBUG_PRINT
 	printf("in has for %lu\n", e);
+#endif
 	for(size_t i = log_size - 1; i > log_size - num_deletes_in_log - 1; i--) {
 		if(blind_read_key(i) == e) {
+#if DEBUG_PRINT
 			printf("\tfound %lu in delete log\n", e);
 			print();
+#endif
 			return false;
 		}
 	}
@@ -1612,13 +1622,18 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) const 
   // if it was found in the blocks, add the index of it into the duplicates list
   size_t skip_index[log_size];
   size_t num_to_skip = 0;
+
+#if DEBUG_PRINT
   print();
+#endif
   // add inserts to remove, if any
   for(size_t i = 0; i < num_inserts_in_log; i++) {
       key_type key = blind_read_key(i);
       size_t idx = get_index_in_blocks(key);
       if (idx < N) {
+#if DEBUG_PRINT
 	printf("\tskip %lu from insert log\n", key);
+#endif
 	skip_index[num_to_skip] = idx;
 	num_to_skip++;
       }
@@ -1628,7 +1643,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) const 
     key_type key = blind_read_key(i);
     size_t idx = get_index_in_blocks(key);
     if (idx < N) {
+#if DEBUG_PRINT
       printf("\tskip %lu from delete log\n", key);
+#endif
       skip_index[num_to_skip] = idx;
       num_to_skip++;
     }
@@ -1661,7 +1678,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::map(F f) const 
 			for(size_t j = 0; j < num_to_skip; j++) {
 				if(i == skip_index[j]) { 
 					skip = true; 
+#if DEBUG_PRINT
 					printf("skip elt %lu at idx %lu\n", index, i);
+#endif
 				}
 			}
 	if(skip) { continue; }
@@ -1689,7 +1708,9 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_wi
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_direct() const {
+#if DEBUG_PRINT
   printf("*** sum with subtraction ***\n");
+#endif
   uint64_t result = 0;
 
   size_t skip_index[log_size];
@@ -1709,7 +1730,9 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_di
     key_type key = blind_read_key(i);
     size_t idx = get_index_in_blocks(key);
     if (idx < N) {
+#if DEBUG_PRINT
 	    printf("\tskip key %lu from deletes\n", key);
+#endif
 	    skip_index[num_to_skip] = idx;
 	    num_to_skip++;
     }

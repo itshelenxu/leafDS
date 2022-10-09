@@ -24,6 +24,12 @@
 
 #define key_type uint64_t
 
+static long get_usecs() {
+  struct timeval st;
+  gettimeofday(&st, NULL);
+  return st.tv_sec * 1000000 + st.tv_usec;
+}
+
 [[nodiscard]] int parallel_test_insert_leafDS(uint32_t el_count, uint32_t num_copies) {
   std::vector<uint64_t> insert_times(NUM_TRIALS);
   std::vector<uint64_t> sum_times_with_map(NUM_TRIALS);
