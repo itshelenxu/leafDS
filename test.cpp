@@ -1098,6 +1098,10 @@ static long get_usecs() {
   // Verify key_at_sorted_index against sorted elts
   std::sort(elts_sorted.begin(), elts_sorted.end());
 
+  // for (int i = 0; i < elts_sorted.size(); i++) {
+  //   printf("elts_sorted: %lu \t checker: %lu\n", elts_sorted[i], checker[i]);
+  // }
+
   for (uint32_t i = 0; i < elts_sorted.size(); i++) {
     // auto val = ds.get_key_at_sorted_index(i);
     auto val = ds.get_key_at_sorted_index(i);
@@ -1299,6 +1303,7 @@ static long get_usecs() {
     if (i >= el_count/2) {
       // remove from left leafDS
       ds_right_1.remove(el);
+      printf("Deleting elt from right: %lu\n", el);
     } else {
       elts_remaining_1.push_back(el);
       if (!ds_right_1.has(el)) {

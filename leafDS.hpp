@@ -674,7 +674,12 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_range(size
 #if DEBUG
 	// check sortedness
 	for(size_t i = start_idx + 1; i < end_idx; i++) {
+		if (blind_read_key(i-1) >= blind_read_key(i)) {
+			print();
+		}
+		ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
 		assert(blind_read_key(i-1) < blind_read_key(i));
+
 	}
 #endif
 }
@@ -1156,12 +1161,17 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 			// get deduped
 			// TODO: first flush the deletes
 			if (num_deletes_in_log > 0) {
-				flush_deletes_to_blocks();
+				if (delete_from_header()) {
+					strip_deletes_and_redistrib();
+				} else {
+					flush_deletes_to_blocks();
+				}
 			}
 			flush_log_to_blocks(num_inserts_in_log);
 		}
 
 		// clear log
+		num_deletes_in_log = 0;
 		num_inserts_in_log = 0;
 		clear_range(0, log_size);
 	}
@@ -2344,7 +2354,9 @@ key_type LeafDS<log_size, header_size, block_size, key_type, Ts...>::split(LeafD
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::merge(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right) {
 	// Flush existing deletes in right leaf to blocks
-	if (right->num_deletes_in_log > 0) {
+	if (right->num_deletes_in_log > 0 && right->blind_read_key(right->header_start) != 0) {
+		// right->print();
+		assert(right->blind_read_key(right->header_start) != 0);
 		right->sort_range(log_size - right->num_deletes_in_log, log_size);
 		if (right->delete_from_header()) {
 			printf("deleting from right header, stripping and deleting");
@@ -2377,6 +2389,8 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::merge(LeafDS<lo
 	size_t start_of_cur_block = 0;
 	if (right->blind_read_key(blocks_ptr) != 0 || cur_block != 0) {
 		while (cur_block < right->num_blocks) {
+			// printf("inserting elt: %lu\n", right->blind_read_key(blocks_ptr));
+			assert(right->blind_read_key(blocks_ptr) != 0);
 			insert(right->blind_read(blocks_ptr));
 			right->advance_block_ptr(&blocks_ptr, &cur_block, &start_of_cur_block, count_per_block);
 		}
@@ -2405,7 +2419,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_max_2(key_t
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::shift_left(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right, int shiftnum) {
 	// Flush deletes to right leaf blocks
-	if (right->num_deletes_in_log > 0) {
+	if (right->num_deletes_in_log > 0 && right->blind_read_key(right->header_start) != 0) {
 		right->sort_range(log_size - right->num_deletes_in_log, log_size);
 		if (right->delete_from_header()) {
 			printf("deleting from right header, stripping and deleting");
@@ -2439,7 +2453,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::shift_left(Leaf
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::shift_right(LeafDS<log_size, header_size, block_size, key_type, Ts...>* left, int shiftnum, int left_num_elts) {
 	// Flush deletes to left leaf blocks
-	if (left->num_deletes_in_log > 0) {
+	if (left->num_deletes_in_log > 0 && left->blind_read_key(left->header_start) != 0) {
 		left->sort_range(log_size - left->num_deletes_in_log, log_size);
 		if (left->delete_from_header()) {
 			printf("deleting from left header, stripping and deleting");
@@ -2470,7 +2484,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::shift_right(Lea
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 key_type& LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_key_at_sorted_index(size_t i) {
 	// flush delete log so we can do two ptr sorted check on inserts
-	if (num_deletes_in_log > 0) {
+	if (num_deletes_in_log > 0 && blind_read_key(header_start) != 0) {
 		sort_range(log_size - num_deletes_in_log, log_size);
 		if (delete_from_header()) {
 #if DEBUG_PRINT
