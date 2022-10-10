@@ -2326,10 +2326,61 @@ key_type LeafDS<log_size, header_size, block_size, key_type, Ts...>::split(LeafD
 	return mid_elt;
 }
 
-
+//! Merge two leaf nodes. The function moves all key/data pairs from right
+//! to left and sets right's slotuse to zero. The right slot is then removed
+//! by the calling parent node.
+// Assumes that right's log_size, header_size, and block_size is the same as this
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::merge(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right) {
+	// Flush existing deletes to blocks
+	printf("**PRINTING RIGHT BEFORE DELETES**\n");
+	right->print();
 
+	if (right->num_deletes_in_log > 0) {
+		right->sort_range(log_size - right->num_deletes_in_log, log_size);
+		if (right->delete_from_header()) {
+			printf("deleting from right header, stripping and deleting");
+			right->strip_deletes_and_redistrib();
+		} else {
+			right->flush_deletes_to_blocks();
+		}
+	}
+	right->clear_range(log_size - right->num_deletes_in_log, log_size);
+	right->num_deletes_in_log = 0;
+	printf("**PRINTING RIGHT AFTER DELETES**\n");
+	right->print();
+
+	// Insert existing items from right into left (no need to sort them beforehand)
+
+	// Insert into left from right log
+	size_t log_ptr = 0;
+	while (log_ptr < right->num_inserts_in_log) {
+		insert(right->blind_read(log_ptr));
+		log_ptr++;
+	}
+
+	// Count + sort the blocks
+	unsigned short count_per_block[right->num_blocks];
+	for (size_t i = 0; i < right->num_blocks; i++) {
+		count_per_block[i] = right->count_block(i);
+	}
+	
+	// Insert into left from right blocks, handle edge case of pre-first insert flush
+	size_t blocks_ptr = header_start;
+	size_t cur_block = 0;
+	size_t start_of_cur_block = 0;
+	if (right->blind_read_key(blocks_ptr) != 0 || cur_block != 0) {
+		while (cur_block < right->num_blocks) {
+			insert(right->blind_read(blocks_ptr));
+			right->advance_block_ptr(&blocks_ptr, &cur_block, &start_of_cur_block, count_per_block);
+		}
+	}
+
+	// Clear the right leaf
+	right->clear_range(0, right->N);
+	right->num_elts_total = 0;
+	right->num_inserts_in_log = 0;
+	return;
 }
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
@@ -2367,10 +2418,8 @@ key_type& LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_key_at
 
 	// Count + sort the blocks
 	unsigned short count_per_block[num_blocks];
-	size_t total_in_blocks = 0;
 	for (size_t i = 0; i < num_blocks; i++) {
 		count_per_block[i] = count_block(i);
-		total_in_blocks += count_per_block[i];
 	}
 
 	for (size_t i = 0; i < num_blocks; i++) {

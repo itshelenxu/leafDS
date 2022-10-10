@@ -1210,6 +1210,137 @@ static long get_usecs() {
   return 0;
 }
 
+[[nodiscard]] int merge_test_templated(uint32_t el_count) {
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_left;
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_right;
+  std::mt19937 rng(0);
+  std::uniform_int_distribution<key_type> dist_el(1, N * 16);
+
+  std::vector<key_type> checker;
+  checker.reserve(el_count);
+  std::vector<key_type> elts;
+
+  // add 1/2 of elements to each leafDS (so both are underfull and can be merged)
+  for (uint32_t i = 0; i < el_count/2; i++) {
+    key_type el = dist_el(rng);
+    elts.push_back(el);
+    // add to left leafDS
+    ds_left.insert(el);
+  }
+
+  // add 1/2 of elements to each leafDS (so both are underfull and can be merged)
+  for (uint32_t i = el_count/2; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    elts.push_back(el);
+    // add to left leafDS
+    ds_right.insert(el);
+  }
+
+  ds_left.merge(&(ds_right));
+
+  // Check if left leafDS has all elements from left and right after merge
+  if (ds_right.get_num_elements() != 0) {
+    ds_right.print();
+    printf("Right leaf not empty after only inserts, size = %lu\n", ds_right.get_num_elements());
+    return -1;
+  }
+  for (uint32_t i = 0; i < elts.size(); i++) {
+    auto el = elts[i];
+    if (!ds_left.has(el)) {
+      ds_left.print();
+      printf("Missing elt from left leaf after only inserts, elt: %lu \n", el);
+      return -1;
+    }
+  } 
+
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_left_1;
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_right_1;
+
+  std::vector<key_type> elts_left_1;
+  std::vector<key_type> elts_right_1;
+  std::vector<key_type> elts_remaining_1;
+
+   // add all of elements to right leafDS then remove some (so both are underfull and can be merged)
+  for (uint32_t i = 0; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    if (!std::count(elts_left_1.begin(), elts_left_1.end(), el)) {
+      elts_left_1.push_back(el);
+    }
+    // add to left leafDS
+    ds_left_1.insert(el);
+  } 
+
+  for (uint32_t i = 0; i < elts_left_1.size(); i++) {
+    key_type el = elts_left_1[i];
+    if (i < el_count/2) {
+      // remove from left leafDS
+      ds_left_1.remove(el);
+    } else {
+      elts_remaining_1.push_back(el);
+    }
+  } 
+
+  for (uint32_t i = 0; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    if (!std::count(elts_right_1.begin(), elts_right_1.end(), el)) {
+      elts_right_1.push_back(el);
+    }
+    // add to right leafDS
+    ds_right_1.insert(el);
+    if (!ds_right_1.has(el)) {
+      ds_right_1.print();
+      printf("Missing from ds_right on insert, elt: %lu , index = %lu\n", el, i);
+      return -1;
+    }
+  }
+
+  for (uint32_t i = 0; i < elts_right_1.size(); i++) {
+    key_type el = elts_right_1[i];
+    if (i >= el_count/2) {
+      // remove from left leafDS
+      ds_right_1.remove(el);
+    } else {
+      elts_remaining_1.push_back(el);
+      if (!ds_right_1.has(el)) {
+        ds_right_1.print();
+        printf("Missing from ds_right after delete, elt: %lu , index = %lu\n", el, i);
+        return -1;
+      }
+    }
+  }
+
+  printf("size of elts remaining: %lu\n", elts_remaining_1.size());
+
+  ds_left_1.merge(&(ds_right_1));
+
+  // Check if left leafDS has all elements from left and right after merge
+  if (ds_right_1.get_num_elements() != 0) {
+    ds_right_1.print();
+    printf("Right leaf not empty after inserts and deletes, size = %lu\n", ds_right_1.get_num_elements());
+    return -1;
+  }
+  for (uint32_t i = 0; i < elts_remaining_1.size(); i++) {
+    auto el = elts_remaining_1[i];
+    if (!ds_left_1.has(el)) {
+      ds_left_1.print();
+      ds_right_1.print();
+      printf("Missing from left leaf after inserts and deletes, elt: %lu , index = %lu\n", el, i);
+      return -1;
+    }
+  } 
+  return 0;
+}
+
+[[nodiscard]] int merge_test(uint32_t el_count) {
+  int r = 0;
+  r = merge_test_templated(el_count);
+  if (r) {
+    return r;
+  }
+
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
 
   cxxopts::Options options("LeafDStester",
@@ -1229,7 +1360,8 @@ int main(int argc, char *argv[]) {
     ("update_values_test", "time updating with values")
     ("unsorted_range_query_test", "time updating with values")
     ("sorted_range_query_test", "time updating with values")
-    ("key_at_sorted_index_test", "verify correctness");
+    ("key_at_sorted_index_test", "verify correctness")
+    ("merge_test", "verify correctness");
     // ("help","Print help");
   // clang-format on
 
@@ -1270,6 +1402,10 @@ int main(int argc, char *argv[]) {
 
   if (result["key_at_sorted_index_test"].as<bool>()) {
     return key_at_sorted_index_test(el_count);
+  }
+
+  if (result["merge_test"].as<bool>()) {
+    return merge_test(el_count);
   }
 
   return 0;
