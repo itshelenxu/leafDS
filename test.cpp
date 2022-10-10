@@ -1580,8 +1580,8 @@ static long get_usecs() {
 
   printf("ds_right num elems = %lu, correct = %lu \n", ds_right.get_num_elements(), elts_right_remaining_1.size());
   printf("ds_left num elems = %lu, correct = %lu \n", ds_left.get_num_elements(), elts_left_remaining_1.size());
-  printf("shifting diff %lu\n", ds_right.get_num_elements() - ds_left.get_num_elements());
-  unsigned int shiftnum = (ds_right.get_num_elements() - ds_left.get_num_elements()) >> 1;
+  printf("shifting diff %lu\n", ds_left.get_num_elements() - ds_right.get_num_elements());
+  unsigned int shiftnum = (ds_left.get_num_elements() - ds_right.get_num_elements()) >> 1;
   printf("shifting real %lu\n", shiftnum);
 
   ds_right.shift_right(&(ds_left), shiftnum, elts_left_remaining_1.size());
