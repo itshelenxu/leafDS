@@ -191,6 +191,11 @@ public:
 
 public:
   key_type split(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right);
+  void merge(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right);
+  void get_max_2(key_type* max_key, key_type* second_max_key);
+  void shift_left(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right, int shiftnum);
+  void shift_right(LeafDS<log_size, header_size, block_size, key_type, Ts...>* left, int shiftnum);
+  key_type& get_key_at_sorted_index(size_t i);
 
 private:
 	// private helpers
@@ -1386,6 +1391,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::delete_from_hea
 	size_t header_ptr = header_start;
 
 	while(log_ptr < log_size && header_ptr < header_start + header_size) {
+		printf("DEL FROM HEADER CHECK: log_key: %lu, header_key: %lu, ", blind_read_key(log_ptr), blind_read_key(header_ptr));
 		if(blind_read_key(header_ptr) == blind_read_key(log_ptr)) {
 			return true;
 		} else if (blind_read_key(header_ptr) > blind_read_key(log_ptr)) {
@@ -2318,4 +2324,103 @@ key_type LeafDS<log_size, header_size, block_size, key_type, Ts...>::split(LeafD
 #endif
 
 	return mid_elt;
+}
+
+
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::merge(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right) {
+
+}
+
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_max_2(key_type* max_key, key_type* second_max_key) {
+
+}
+
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::shift_left(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right, int shiftnum) {
+
+}
+
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::shift_right(LeafDS<log_size, header_size, block_size, key_type, Ts...>* left, int shiftnum) {
+
+}
+
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+key_type& LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_key_at_sorted_index(size_t i) {
+	// flush delete log so we can do two ptr sorted check on inserts
+	if (num_deletes_in_log > 0) {
+		sort_range(log_size - num_deletes_in_log, log_size);
+		if (delete_from_header()) {
+			printf("deleting from header, stripping and deleting");
+			strip_deletes_and_redistrib();
+		} else {
+			flush_deletes_to_blocks();
+		}
+	}
+	clear_range(log_size - num_deletes_in_log, log_size);
+	num_deletes_in_log = 0;
+
+	// Sort log
+	sort_range(0, num_inserts_in_log);
+
+	// Count + sort the blocks
+	unsigned short count_per_block[num_blocks];
+	size_t total_in_blocks = 0;
+	for (size_t i = 0; i < num_blocks; i++) {
+		count_per_block[i] = count_block(i);
+		total_in_blocks += count_per_block[i];
+	}
+
+	for (size_t i = 0; i < num_blocks; i++) {
+		auto block_range = get_block_range(i);
+		sort_range(block_range.first, block_range.first + count_per_block[i]);
+	}
+
+	// two pointer search for key at sorted index
+	size_t log_ptr = 0;
+	size_t blocks_ptr = header_start;
+	size_t cur_block = 0;
+	size_t start_of_cur_block = 0;
+	size_t curr_index = 0;
+	while ((log_ptr < num_inserts_in_log || cur_block < num_blocks) && curr_index < i) {
+		// check which ptr to increment
+		if (log_ptr < num_inserts_in_log && cur_block < num_blocks) {
+			if (blind_read_key(log_ptr) <= blind_read_key(blocks_ptr)) {
+				log_ptr++;
+			} else if (blind_read_key(blocks_ptr) == 0 && cur_block == 0) {
+				// edge case of first header block being 0 pre-first flush, we still want to increment log_ptr here
+				log_ptr++;
+			} else {
+				advance_block_ptr(&blocks_ptr, &cur_block, &start_of_cur_block, count_per_block);
+			}
+		} else if (log_ptr < num_inserts_in_log) {
+			log_ptr++;
+		} else {
+			advance_block_ptr(&blocks_ptr, &cur_block, &start_of_cur_block, count_per_block);
+		}
+		curr_index++;
+	}
+#if DEBUG_PRINT
+	auto log_ptr_val = blind_read_key(log_ptr);
+	auto blocks_ptr_val = blind_read_key(blocks_ptr);
+	printf("looking for index %lu\n", i);
+	printf("\tlogptr %lu, val %lu\n", log_ptr, log_ptr_val);
+	printf("\tblocks_ptr %lu, val %lu\n", blocks_ptr, blocks_ptr_val);
+#endif
+	if (log_ptr < num_inserts_in_log && cur_block < num_blocks) {
+		if (blind_read(log_ptr) <= blind_read(blocks_ptr)) {
+			return std::get<0>(blind_read(log_ptr));
+		} else if (blind_read_key(blocks_ptr) == 0 && cur_block == 0) {
+			// edge case of first header block being 0 pre-first flush
+			return std::get<0>(blind_read(log_ptr));
+		} else {
+			return std::get<0>(blind_read(blocks_ptr));
+		}
+	} else if (log_ptr < num_inserts_in_log) {
+		return std::get<0>(blind_read(log_ptr));
+	} else {
+		return std::get<0>(blind_read(blocks_ptr));
+	}
 }
