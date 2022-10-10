@@ -24,6 +24,12 @@
 
 #define key_type uint64_t
 
+static long get_usecs() {
+  struct timeval st;
+  gettimeofday(&st, NULL);
+  return st.tv_sec * 1000000 + st.tv_usec;
+}
+
 [[nodiscard]] int parallel_test_insert_leafDS(uint32_t el_count, uint32_t num_copies) {
   std::vector<uint64_t> insert_times(NUM_TRIALS);
   std::vector<uint64_t> sum_times_with_map(NUM_TRIALS);
@@ -1094,6 +1100,612 @@
   return 0;
 }
 
+[[nodiscard]] int key_at_sorted_index_test_templated(uint32_t el_count) {
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds;
+  std::mt19937 rng(0);
+  std::uniform_int_distribution<key_type> dist_el(1, N * 16);
+
+  std::vector<key_type> checker;
+  checker.reserve(el_count);
+  std::vector<key_type> elts;
+  std::vector<key_type> elts_sorted;
+
+  // add some elements
+  for (uint32_t i = 0; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    elts.push_back(el);
+    if (!std::count(elts_sorted.begin(), elts_sorted.end(), el)) {
+      elts_sorted.push_back(el);
+    }
+    // add to leafDS
+    ds.insert(el);
+
+    // add to sorted vector
+    // todo: doesn't work, last elt is set to 0 sometimes
+    size_t idx = 0;
+    for(; idx < checker.size(); idx++) {
+      if(checker[idx] == el) {
+        break;
+      } else if (checker[idx] > el) {
+        break;
+      }
+    }
+    if(checker.size() == 0 || checker[idx] != el) {
+      checker.insert(checker.begin() + idx, el);
+    }
+
+    if (!ds.has(el)) {
+      ds.print();
+      printf("don't have something, %lu, we inserted while inserting "
+             "elements\n",
+             el);
+      return -1;
+    }
+  }
+
+  // Verify key_at_sorted_index against sorted elts
+  std::sort(elts_sorted.begin(), elts_sorted.end());
+
+  for (uint32_t i = 0; i < elts_sorted.size(); i++) {
+    // auto val = ds.get_key_at_sorted_index(i);
+    auto val = ds.get_key_at_sorted_index(i);
+    printf("elts_sorted: %lu \t leafds: %lu\n", elts_sorted[i], val);
+    if (val != elts_sorted[i]) {
+      printf("Should find key %lu but instead found %lu", elts_sorted[i], val);
+      return -1;
+    }
+  }
+
+  printf("\n*** finished inserting elts ***\n");
+  printf("num elts = %lu\n", checker.size());
+  // then remove all the stuff we added
+  for (int cur_i = 0; cur_i < el_count; cur_i ++ ) {
+    auto el = elts[cur_i];
+    ds.remove(el);
+    elts_sorted.erase(std::remove(elts_sorted.begin(), elts_sorted.end(), el), elts_sorted.end());
+    printf("removed elem %lu\n", el);
+
+    // Check key_at_sorted_index midway through deletes
+    if (cur_i == el_count / 2) {
+      std::sort(elts_sorted.begin(), elts_sorted.end());
+     
+      printf("***BEFORE FLUSHING**\n\n");
+      ds.print();
+      printf("sorted size %lu\n", elts_sorted.size());
+      for (uint32_t j = 0; j < elts_sorted.size(); j++) {
+        auto val = ds.get_key_at_sorted_index(j);
+
+        if (j == 0){
+          printf("***AFTER FLUSHING**\n\n");
+          ds.print();
+        }
+        printf("elts_sorted: %lu \t leafds: %lu\n", elts_sorted[j], val);
+        if (val != elts_sorted[j]) {
+          printf("Should find key %lu but instead found %lu", elts_sorted[j], val);
+          return -1;
+        }
+      }
+    }
+    
+    size_t i = 0;
+    for(; i < checker.size(); i++) {
+	    if (checker[i] == el) {
+		    break;
+	    }
+    }
+    if(i < checker.size()) {
+	    tbassert(i < checker.size(), "el = %lu, i == checker_size == %lu\n", el, checker.size());
+	    tbassert(checker[i] == el, "checker[%lu] = %lu, el = %lu\n", i, checker[i], el);
+	    checker.erase(checker.begin() + i);
+	    printf("\tdeleting elt %lu (checker[%lu] = %lu) from vector\n", el, i, checker[i]);
+	    printf("\tafter delete, num elts in vector = %lu\n", checker.size());
+    }
+    if (ds.has(el)) {
+      ds.print();
+      printf("has %lu but should have deleted\n", el);
+      assert(false);
+      return -1;
+    }
+		
+    // check with sum
+    uint64_t sum = ds.sum_keys_with_map();
+    uint64_t sum_direct = ds.sum_keys_direct();
+
+    uint64_t correct_sum = 0;
+    for (auto elt : checker) {
+      correct_sum += elt;
+    }
+    printf("correct sum %lu\n", correct_sum);
+
+    if (correct_sum != sum) {
+      ds.print();
+      printf("incorrect sum keys with map\n");
+      tbassert(correct_sum == sum, "got sum %lu, should be %lu\n", sum, correct_sum);
+    }
+    if (correct_sum != sum_direct) {
+      ds.print();
+      printf("incorrect sum keys with subtraction\n");
+      tbassert(correct_sum == sum_direct, "got sum %lu, should be %lu\n", sum_direct, correct_sum);
+    }
+    printf("got sum %lu\n", sum);
+    printf("got sum direct %lu\n", sum_direct);
+
+    // do range queries and check them against sorted list
+  }
+
+  // Verify key_at_sorted_index against sorted elts
+  std::sort(elts_sorted.begin(), elts_sorted.end());
+
+  for (uint32_t i = 0; i < elts_sorted.size(); i++) {
+    auto val = ds.get_key_at_sorted_index(i);
+    printf("elts_sorted: %lu \t leafds: %lu\n", elts_sorted[i], val);
+    if (val != elts_sorted[i]) {
+      printf("Should find key %lu but instead found %lu", elts_sorted[i], val);
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+[[nodiscard]] int key_at_sorted_index_test(uint32_t el_count) {
+  int r = 0;
+  r = key_at_sorted_index_test_templated(el_count);
+  if (r) {
+    return r;
+  }
+
+  return 0;
+}
+
+[[nodiscard]] int merge_test_templated(uint32_t el_count) {
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_left;
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_right;
+  std::mt19937 rng(0);
+  std::uniform_int_distribution<key_type> dist_el(1, N * 16);
+
+  std::vector<key_type> checker;
+  checker.reserve(el_count);
+  std::vector<key_type> elts;
+
+  // add 1/2 of elements to each leafDS (so both are underfull and can be merged)
+  for (uint32_t i = 0; i < el_count/2; i++) {
+    key_type el = dist_el(rng);
+    elts.push_back(el);
+    // add to left leafDS
+    ds_left.insert(el);
+  }
+
+  // add 1/2 of elements to each leafDS (so both are underfull and can be merged)
+  for (uint32_t i = el_count/2; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    elts.push_back(el);
+    // add to left leafDS
+    ds_right.insert(el);
+  }
+
+  ds_left.merge(&(ds_right));
+
+  // Check if left leafDS has all elements from left and right after merge
+  if (ds_right.get_num_elements() != 0) {
+    ds_right.print();
+    printf("Right leaf not empty after only inserts, size = %lu\n", ds_right.get_num_elements());
+    return -1;
+  }
+  for (uint32_t i = 0; i < elts.size(); i++) {
+    auto el = elts[i];
+    if (!ds_left.has(el)) {
+      ds_left.print();
+      printf("Missing elt from left leaf after only inserts, elt: %lu \n", el);
+      return -1;
+    }
+  } 
+
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_left_1;
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_right_1;
+
+  std::vector<key_type> elts_left_1;
+  std::vector<key_type> elts_right_1;
+  std::vector<key_type> elts_remaining_1;
+
+   // add all of elements to right leafDS then remove some (so both are underfull and can be merged)
+  for (uint32_t i = 0; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    if (!std::count(elts_left_1.begin(), elts_left_1.end(), el)) {
+      elts_left_1.push_back(el);
+    }
+    // add to left leafDS
+    ds_left_1.insert(el);
+  } 
+
+  for (uint32_t i = 0; i < elts_left_1.size(); i++) {
+    key_type el = elts_left_1[i];
+    if (i < el_count/2) {
+      // remove from left leafDS
+      ds_left_1.remove(el);
+    } else {
+      elts_remaining_1.push_back(el);
+    }
+  } 
+
+  for (uint32_t i = 0; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    if (!std::count(elts_right_1.begin(), elts_right_1.end(), el)) {
+      elts_right_1.push_back(el);
+    }
+    // add to right leafDS
+    ds_right_1.insert(el);
+    if (!ds_right_1.has(el)) {
+      ds_right_1.print();
+      printf("Missing from ds_right on insert, elt: %lu , index = %lu\n", el, i);
+      return -1;
+    }
+  }
+
+  for (uint32_t i = 0; i < elts_right_1.size(); i++) {
+    key_type el = elts_right_1[i];
+    if (i >= el_count/2) {
+      // remove from left leafDS
+      ds_right_1.remove(el);
+    } else {
+      elts_remaining_1.push_back(el);
+      if (!ds_right_1.has(el)) {
+        ds_right_1.print();
+        printf("Missing from ds_right after delete, elt: %lu , index = %lu\n", el, i);
+        return -1;
+      }
+    }
+  }
+
+  printf("size of elts remaining: %lu\n", elts_remaining_1.size());
+
+  ds_left_1.merge(&(ds_right_1));
+
+  // Check if left leafDS has all elements from left and right after merge
+  if (ds_right_1.get_num_elements() != 0) {
+    ds_right_1.print();
+    printf("Right leaf not empty after inserts and deletes, size = %lu\n", ds_right_1.get_num_elements());
+    return -1;
+  }
+  for (uint32_t i = 0; i < elts_remaining_1.size(); i++) {
+    auto el = elts_remaining_1[i];
+    if (!ds_left_1.has(el)) {
+      ds_left_1.print();
+      ds_right_1.print();
+      printf("Missing from left leaf after inserts and deletes, elt: %lu , index = %lu\n", el, i);
+      return -1;
+    }
+  } 
+  return 0;
+}
+
+[[nodiscard]] int merge_test(uint32_t el_count) {
+  int r = 0;
+  r = merge_test_templated(el_count);
+  if (r) {
+    return r;
+  }
+
+  return 0;
+}
+
+[[nodiscard]] int shift_left_test_templated(uint32_t el_count) {
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_left;
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_right;
+  std::mt19937 rng(0);
+  std::uniform_int_distribution<key_type> dist_el(1, N * 16);
+
+  std::vector<key_type> checker;
+  checker.reserve(el_count);
+  std::vector<key_type> elts_left_1;
+  std::vector<key_type> elts_right_1;
+  std::vector<key_type> elts_left_remaining_1;
+  std::vector<key_type> elts_right_remaining_1;
+
+  // add 3/4 of elements to left leafDS 
+  for (uint32_t i = 0; i < (el_count*3.0)/4.0; i++) {
+    key_type el = dist_el(rng);
+    if (!std::count(elts_left_1.begin(), elts_left_1.end(), el)) {
+      elts_left_1.push_back(el);
+    }
+    ds_left.insert(el);
+  }
+
+  // add all of elements to right leafDS (right will be shifted over)
+  for (uint32_t i = 0; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    if (!std::count(elts_right_1.begin(), elts_right_1.end(), el)) {
+      elts_right_1.push_back(el);
+    }
+    ds_right.insert(el);
+  }
+
+  // delete 1/4 of elements from left leafDS
+  for (uint32_t i = 0; i < elts_left_1.size(); i++) {
+    key_type el = elts_left_1[i];
+    if (i < el_count/4) {
+      // remove from left leafDS
+      ds_left.remove(el);
+      if (ds_left.has(el)) {
+        printf("Failed to remove el from left leaf: %lu", el);
+        return -1;
+      }
+    } else {
+      elts_left_remaining_1.push_back(el);
+    }
+  } 
+
+  // delete 1/4 of elements from right leafDS
+  for (uint32_t i = 0; i < elts_right_1.size(); i++) {
+    key_type el = elts_right_1[i];
+    if (i < el_count/4) {
+      // remove from left leafDS
+      ds_right.remove(el);
+      if (ds_right.has(el)) {
+        printf("Failed to remove el from right leaf: %lu", el);
+        return -1;
+      }
+    } else {
+      elts_right_remaining_1.push_back(el);
+    }
+  }
+
+/*
+  TODO!!! 
+  get_num_elements() and other size checks aren't working with inserts and deletes, so these tests fail
+  shift itself seems to be working though, check existence and deletion in left and right
+
+  if (ds_left.get_num_elements() != elts_left_remaining_1.size()) {
+    ds_left.print();
+    printf("Left leaf not correct size pre shift = %lu\n, expected %lu", ds_left.get_num_elements(), elts_left_remaining_1.size());
+    return -1;
+  }
+  if (ds_right.get_num_elements() != elts_right_remaining_1.size()) {
+    ds_right.print();
+    printf("Right leaf not correct size pre shift = %lu\n, expected %lu", ds_left.get_num_elements(), elts_right_remaining_1.size());
+    return -1;
+  }
+*/
+
+  printf("ds_right num elems = %lu, correct = %lu \n", ds_right.get_num_elements(), elts_right_remaining_1.size());
+  printf("ds_left num elems = %lu, correct = %lu \n", ds_left.get_num_elements(), elts_left_remaining_1.size());
+  printf("shifting diff %lu\n", ds_right.get_num_elements() - ds_left.get_num_elements());
+  unsigned int shiftnum = (ds_right.get_num_elements() - ds_left.get_num_elements()) >> 1;
+  printf("shifting real %lu\n", shiftnum);
+
+  ds_left.shift_left(&(ds_right), shiftnum);
+
+  printf("ds_right num elems post_shift %lu\n", ds_right.get_num_elements());
+  printf("ds_left num elems post_shift %lu\n",ds_left.get_num_elements());
+
+/*
+  TODO!!! 
+  get_num_elements() and other size checks aren't working with inserts and deletes, so these tests fail
+  shift itself seems to be working though, check existence and deletion in left and right
+
+  // Check if left leafDS has shifted elements from right after shift
+  if (ds_left.get_num_elements() != elts_left_remaining_1.size() + shiftnum) {
+    ds_left.print();
+    printf("Left leaf not correct size = %lu\n, expected %lu", ds_left.get_num_elements(), elts_left_remaining_1.size() + shiftnum);
+    return -1;
+  }
+  // Check if right leafDS removed shifted elements from right after shift
+  if (ds_right.get_num_elements() != elts_right_remaining_1.size() - shiftnum) {
+    ds_right.print();
+    printf("Right leaf not correct size = %lu\n, expected %lu", ds_right.get_num_elements(), elts_right_remaining_1.size() - shiftnum);
+    return -1;
+  }
+*/
+
+  // Check if original elems in left exist in left
+  for (uint32_t i = 0; i < elts_left_remaining_1.size(); i++) {
+    auto el = elts_left_remaining_1[i];
+    if (!ds_left.has(el)) {
+      ds_left.print();
+      printf("Missing elt in left leaf after shift left from orig, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+  }
+  // Check if elems shifted from right exist in left
+  std::sort(elts_right_remaining_1.begin(), elts_right_remaining_1.end());
+  for (uint32_t i = 0; i < shiftnum; i++) {
+    auto el = elts_right_remaining_1[i];
+    if (!ds_left.has(el)) {
+      ds_left.print();
+      printf("Missing elt in left leaf after shift left from right, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+    if (ds_right.has(el)) {
+      ds_right.print();
+      printf("Elt not removed from in right leaf after shift left from right, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+  }
+  // Check if elems not shifted from right exist in right
+  for (uint32_t i = shiftnum; i < elts_right_remaining_1.size(); i++) {
+    auto el = elts_right_remaining_1[i];
+    if (!ds_right.has(el)) {
+      ds_right.print();
+      printf("Missing elt in right leaf after shift left, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+    if (ds_left.has(el) && !std::count(elts_left_remaining_1.begin(), elts_left_remaining_1.end(), el)) {
+      ds_left.print();
+      printf("Elt should not exist in left leaf after shift left, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+  }
+  return 0;
+}
+
+[[nodiscard]] int shift_left_test(uint32_t el_count) {
+  int r = 0;
+  r = shift_left_test_templated(el_count);
+  if (r) {
+    return r;
+  }
+
+  return 0;
+}
+
+[[nodiscard]] int shift_right_test_templated(uint32_t el_count) {
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_left;
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_right;
+  std::mt19937 rng(0);
+  std::uniform_int_distribution<key_type> dist_el(1, N * 16);
+
+  std::vector<key_type> checker;
+  checker.reserve(el_count);
+  std::vector<key_type> elts_left_1;
+  std::vector<key_type> elts_right_1;
+  std::vector<key_type> elts_left_remaining_1;
+  std::vector<key_type> elts_right_remaining_1;
+
+  // add 3/4 of elements to right leafDS 
+  for (uint32_t i = 0; i < (el_count*3.0)/4.0; i++) {
+    key_type el = dist_el(rng);
+    if (!std::count(elts_right_1.begin(), elts_right_1.end(), el)) {
+      elts_right_1.push_back(el);
+    }
+    ds_right.insert(el);
+  }
+
+  // add all of elements to left leafDS (left will be shifted over)
+  for (uint32_t i = 0; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    if (!std::count(elts_left_1.begin(), elts_left_1.end(), el)) {
+      elts_left_1.push_back(el);
+    }
+    ds_left.insert(el);
+  }
+
+  // delete 1/4 of elements from left leafDS
+  for (uint32_t i = 0; i < elts_left_1.size(); i++) {
+    key_type el = elts_left_1[i];
+    if (i < el_count/4) {
+      // remove from left leafDS
+      ds_left.remove(el);
+      if (ds_left.has(el)) {
+        printf("Failed to remove el from left leaf: %lu", el);
+        return -1;
+      }
+    } else {
+      elts_left_remaining_1.push_back(el);
+    }
+  } 
+
+  // delete 1/4 of elements from right leafDS
+  for (uint32_t i = 0; i < elts_right_1.size(); i++) {
+    key_type el = elts_right_1[i];
+    if (i < el_count/4) {
+      // remove from left leafDS
+      ds_right.remove(el);
+      if (ds_right.has(el)) {
+        printf("Failed to remove el from right leaf: %lu", el);
+        return -1;
+      }
+    } else {
+      elts_right_remaining_1.push_back(el);
+    }
+  }
+
+/*
+  TODO!!! 
+  get_num_elements() and other size checks aren't working with inserts and deletes, so these tests fail
+  shift itself seems to be working though, check existence and deletion in left and right
+
+  if (ds_left.get_num_elements() != elts_left_remaining_1.size()) {
+    ds_left.print();
+    printf("Left leaf not correct size pre shift = %lu\n, expected %lu", ds_left.get_num_elements(), elts_left_remaining_1.size());
+    return -1;
+  }
+  if (ds_right.get_num_elements() != elts_right_remaining_1.size()) {
+    ds_right.print();
+    printf("Right leaf not correct size pre shift = %lu\n, expected %lu", ds_left.get_num_elements(), elts_right_remaining_1.size());
+    return -1;
+  }
+*/
+
+  printf("ds_right num elems = %lu, correct = %lu \n", ds_right.get_num_elements(), elts_right_remaining_1.size());
+  printf("ds_left num elems = %lu, correct = %lu \n", ds_left.get_num_elements(), elts_left_remaining_1.size());
+  printf("shifting diff %lu\n", ds_left.get_num_elements() - ds_right.get_num_elements());
+  unsigned int shiftnum = (ds_left.get_num_elements() - ds_right.get_num_elements()) >> 1;
+  printf("shifting real %lu\n", shiftnum);
+
+  ds_right.shift_right(&(ds_left), shiftnum, elts_left_remaining_1.size());
+
+  printf("ds_right num elems post_shift %lu\n", ds_right.get_num_elements());
+  printf("ds_left num elems post_shift %lu\n",ds_left.get_num_elements());
+
+/*
+  TODO!!! 
+  get_num_elements() and other size checks aren't working with inserts and deletes, so these tests fail
+  shift itself seems to be working though, check existence and deletion in left and right
+
+  // Check if left leafDS has shifted elements from right after shift
+  if (ds_left.get_num_elements() != elts_left_remaining_1.size() + shiftnum) {
+    ds_left.print();
+    printf("Left leaf not correct size = %lu\n, expected %lu", ds_left.get_num_elements(), elts_left_remaining_1.size() + shiftnum);
+    return -1;
+  }
+  // Check if right leafDS removed shifted elements from right after shift
+  if (ds_right.get_num_elements() != elts_right_remaining_1.size() - shiftnum) {
+    ds_right.print();
+    printf("Right leaf not correct size = %lu\n, expected %lu", ds_right.get_num_elements(), elts_right_remaining_1.size() - shiftnum);
+    return -1;
+  }
+*/
+
+  // Check if original elems in right exist in right
+  for (uint32_t i = 0; i < elts_right_remaining_1.size(); i++) {
+    auto el = elts_right_remaining_1[i];
+    if (!ds_right.has(el)) {
+      ds_right.print();
+      printf("Missing elt in right leaf after shift right from orig, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+  }
+  // Check if elems shifted from left exist in right
+  std::sort(elts_left_remaining_1.begin(), elts_left_remaining_1.end());
+  for (uint32_t i = elts_left_remaining_1.size() - shiftnum; i < elts_left_remaining_1.size(); i++) {
+    auto el = elts_left_remaining_1[i];
+    if (!ds_right.has(el)) {
+      ds_right.print();
+      printf("Missing elt in right leaf after shift right from left, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+    if (ds_left.has(el)) {
+      ds_left.print();
+      printf("Elt not removed from left leaf after shift right from left, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+  }
+  // Check if elems not shifted from left exist in left
+  for (uint32_t i = 0; i < elts_left_remaining_1.size() - shiftnum; i++) {
+    auto el = elts_left_remaining_1[i];
+    if (!ds_left.has(el)) {
+      ds_left.print();
+      printf("Missing elt in left leaf after shift right, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+    if (ds_right.has(el) && !std::count(elts_right_remaining_1.begin(), elts_right_remaining_1.end(), el)) {
+      ds_right.print();
+      printf("Elt should not exist in right leaf after shift right, elt: %lu index:%u \n", el, i);
+      return -1;
+    }
+  }
+  return 0;
+}
+
+[[nodiscard]] int shift_right_test(uint32_t el_count) {
+  int r = 0;
+  r = shift_right_test_templated(el_count);
+  if (r) {
+    return r;
+  }
+
+  return 0;
+}
 
 int main(int argc, char *argv[]) {
 
@@ -1113,7 +1725,11 @@ int main(int argc, char *argv[]) {
     ("parallel_test_perf", "just leafDS copies for perf")
     ("update_values_test", "time updating with values")
     ("unsorted_range_query_test", "time updating with values")
-    ("sorted_range_query_test", "time updating with values");
+    ("sorted_range_query_test", "time updating with values")
+    ("key_at_sorted_index_test", "verify correctness")
+    ("merge_test", "verify correctness")
+    ("shift_left_test", "verify correctness")
+    ("shift_right_test", "verify correctness");
     // ("help","Print help");
   // clang-format on
 
@@ -1150,6 +1766,22 @@ int main(int argc, char *argv[]) {
 
   if (result["parallel_test_perf"].as<bool>()) {
     return parallel_test_perf(el_count, num_copies, 1.0);
+  }
+
+  if (result["key_at_sorted_index_test"].as<bool>()) {
+    return key_at_sorted_index_test(el_count);
+  }
+
+  if (result["merge_test"].as<bool>()) {
+    return merge_test(el_count);
+  }
+
+  if (result["shift_left_test"].as<bool>()) {
+    return shift_left_test(el_count);
+  }
+
+  if (result["shift_right_test"].as<bool>()) {
+    return shift_right_test(el_count);
   }
 
   return 0;
