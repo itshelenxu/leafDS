@@ -1,5 +1,5 @@
 // main test driver for leafDS
-// #define DEBUG_PRINT 0
+// #define DEBUG_PRINT 1
 
 #include "tbassert.h"
 #include "cxxopts.hpp"
@@ -532,6 +532,7 @@
   return 0;
 }
 
+
 [[nodiscard]] int sorted_range_query_test(uint32_t el_count, uint32_t num_copies, uint32_t num_queries, uint32_t max_query_size) {
   // prefill the input
   std::uniform_int_distribution<key_type> dist_el(1, 1088 * 16);
@@ -735,7 +736,7 @@
   return 0;
 }
 
-[[nodiscard]] int insert_delete_templated(uint32_t el_count) {
+[[nodiscard]] int insert_delete_templated(uint32_t el_count, uint32_t num_queries, uint32_t max_query_size) {
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds;
   std::mt19937 rng(0);
   std::uniform_int_distribution<key_type> dist_el(1, N * 16);
@@ -791,6 +792,8 @@
 	    printf("\tdeleting elt %lu (checker[%lu] = %lu) from vector\n", el, i, checker[i]);
 	    printf("\tafter delete, num elts in vector = %lu\n", checker.size());
     }
+
+    // point query
     if (ds.has(el)) {
       ds.print();
       printf("has %lu but should have deleted\n", el);
@@ -821,7 +824,52 @@
     printf("got sum %lu\n", sum);
     printf("got sum direct %lu\n", sum_direct);
 
-    // do range queries and check them against sorted list
+    // TODO: do range queries and check them against sorted list
+    std::uniform_int_distribution<size_t> dist_len(1, max_query_size);
+    // do range queries
+    std::vector<key_type> starts;
+    std::vector<size_t> lengths;
+    std::mt19937 rng_query(1);
+    for(size_t i = 0; i < num_queries; i++) {
+      starts.push_back(dist_el(rng_query));
+      lengths.push_back(dist_len(rng_query));
+    }
+
+    for(uint32_t j = 0; j < num_queries; j++) {
+      // do the correct version in sorted vector
+      size_t idx = 0;
+      while(idx < checker.size() && checker[idx] < starts[j]) {
+	// printf("\tchecker[%lu] = %lu\n", idx, checker[idx]);
+	idx++;
+      }
+      std::vector<key_type> correct_range;
+      printf("idx start = %lu\n", idx);
+      while(correct_range.size() < lengths[j] && idx < checker.size()) {
+	      assert(checker[idx] >= starts[j]);
+	      correct_range.push_back(checker[idx]);
+	      // printf("\t\tadd checker[%lu] = %lu\n", idx, checker[idx]);
+	      idx++;
+      }
+      printf("idx end = %lu\n", idx);
+      
+      auto test_range = ds.sorted_range(starts[j], lengths[j]);
+      if (test_range.size() != correct_range.size()) {
+	printf("query %u, start = %lu, length = %lu\n", j, starts[j], lengths[j]);
+	printf("\n");
+	for(size_t k = 0; k < test_range.size(); k++) {
+	  printf("test_output[%lu] = %lu\n", k, std::get<0>(test_range[k]));
+	}
+	for(size_t k = 0; k < correct_range.size(); k++) {
+	  printf("correct_output[%lu] = %lu\n", k, correct_range[k]);
+	}
+	printf("\n");
+	ds.print();
+	assert(test_range.size() == correct_range.size());
+      }
+      for(uint32_t k = 0; k < test_range.size(); k++) {
+	assert(std::get<0>(test_range[k]) == correct_range[k]);
+      }
+    }	
   }
 
   return 0;
@@ -830,7 +878,7 @@
 
 [[nodiscard]] int insert_delete_test(uint32_t el_count) {
   int r = 0;
-  r = insert_delete_templated(el_count);
+  r = insert_delete_templated(el_count, 100, 100);
   if (r) {
     return r;
   }
