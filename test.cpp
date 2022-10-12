@@ -1177,7 +1177,7 @@ static long get_usecs() {
       ds.print();
       printf("sorted size %lu\n", elts_sorted.size());
       for (uint32_t j = 0; j < elts_sorted.size(); j++) {
-        auto val = ds.get_key_at_sorted_index(j);
+        auto val =  ds.get_key_at_sorted_index(j);
 
         if (j == 0){
           printf("***AFTER FLUSHING**\n\n");

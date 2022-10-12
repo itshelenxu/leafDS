@@ -34,7 +34,6 @@
 
 #define STATS 0
 #define DEBUG_PRINT 0
->>>>>>> 2aba2574f3260116ef49e8cae43a0015e59e03a7
 
 static uint64_t one[128] = {
   1ULL << 0, 1ULL << 1, 1ULL << 2, 1ULL << 3, 1ULL << 4, 1ULL << 5, 1ULL << 6, 1ULL << 7, 1ULL << 8, 1ULL << 9,
@@ -586,6 +585,7 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block(ke
 // return index of the block that this elt would fall in
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::find_block_with_hint(key_type key, size_t hint) const {
+	if (key < blind_read_key(header_start)) { return 0; }
 	assert(blind_read_key(header_start) != 0);
 #if !AVX512 || DEBUG
 	// scalar version for debug
@@ -682,7 +682,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_range(size
 	// check sortedness
 	for(size_t i = start_idx + 1; i < end_idx; i++) {
 		if (blind_read_key(i-1) >= blind_read_key(i)) {
-			print();
+			// print();
 		}
 		ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
 		assert(blind_read_key(i-1) < blind_read_key(i));
@@ -950,7 +950,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 		key_type key_to_flush = blind_read_key(i);
 
 #if DEBUG
-		ASSERT(key_to_flush >= blind_read_key(header_start), "key to flush = %lu, first header = %lu\n", key_to_flush, blind_read_key(header_start));
+		ASSERT(key_to_flush >= blind_read_key(header_start), "key to flush = %lu at index in log i = %u, first header = %lu\n", key_to_flush, i, blind_read_key(header_start));
 #endif
 
 		size_t block_idx = find_block_with_hint(key_to_flush, hint);
@@ -1128,6 +1128,15 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 			if(num_deletes_in_log > 0) {
 				sort_range(log_size - num_deletes_in_log, log_size); // sort deletes
 			}
+
+			if (num_deletes_in_log > 0) {
+				if (delete_from_header()) {
+					strip_deletes_and_redistrib();
+				} else {
+					flush_deletes_to_blocks();
+				}
+			}
+
 			// if inserting min, swap out the first header into the first block
 			if (blind_read_key(0) < get_min_block_key()) {
 
@@ -1167,13 +1176,13 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 			// header and log (if there was a new min).  in the flush, it will just
 			// get deduped
 			// TODO: first flush the deletes
-			if (num_deletes_in_log > 0) {
-				if (delete_from_header()) {
-					strip_deletes_and_redistrib();
-				} else {
-					flush_deletes_to_blocks();
-				}
-			}
+			// if (num_deletes_in_log > 0) {
+			// 	if (delete_from_header()) {
+			// 		strip_deletes_and_redistrib();
+			// 	} else {
+			// 		flush_deletes_to_blocks();
+			// 	}
+			// }
 			flush_log_to_blocks(num_inserts_in_log);
 		}
 
@@ -1377,10 +1386,14 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::strip_deletes_a
 		    buffer2[out_ptr++] = buffer[buffer_ptr++];
 	    }
 
+		if (out_ptr <= 32) {
+			printf("outptr <=32 %lu", out_ptr);
+		}
+
 	    num_deletes_in_log = 0;
 	    clear_range(0, N);
 	    printf("num left after merging log and block = %lu\n", out_ptr);
-	    if (out_ptr <= log_size) { // if they can all fit in the log
+	    if (out_ptr < log_size) { // if they can all fit in the log
 		    size_t i = 0;
 		    
 		    for(; i < out_ptr; i++) {
@@ -2364,7 +2377,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::merge(LeafDS<lo
 		assert(right->blind_read_key(right->header_start) != 0);
 		right->sort_range(log_size - right->num_deletes_in_log, log_size);
 		if (right->delete_from_header()) {
-			printf("deleting from right header, stripping and deleting");
+			// printf("deleting from right header, stripping and deleting");
 			right->strip_deletes_and_redistrib();
 		} else {
 			right->flush_deletes_to_blocks();
@@ -2427,7 +2440,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::shift_left(Leaf
 	if (right->num_deletes_in_log > 0 && right->blind_read_key(right->header_start) != 0) {
 		right->sort_range(log_size - right->num_deletes_in_log, log_size);
 		if (right->delete_from_header()) {
-			printf("deleting from right header, stripping and deleting");
+			// printf("deleting from right header, stripping and deleting");
 			right->strip_deletes_and_redistrib();
 		} else {
 			right->flush_deletes_to_blocks();
@@ -2461,7 +2474,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::shift_right(Lea
 	if (left->num_deletes_in_log > 0 && left->blind_read_key(left->header_start) != 0) {
 		left->sort_range(log_size - left->num_deletes_in_log, log_size);
 		if (left->delete_from_header()) {
-			printf("deleting from left header, stripping and deleting");
+			// printf("deleting from left header, stripping and deleting");
 			left->strip_deletes_and_redistrib();
 		} else {
 			left->flush_deletes_to_blocks();
