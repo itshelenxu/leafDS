@@ -247,7 +247,7 @@ private:
 	// given a buffer of n elts, spread them evenly in the blocks
 	void global_redistribute_buffer(element_type* buffer, size_t n);
 
-
+	[[nodiscard]] value_type value_internal(key_type e) const;
 
 public:
   size_t get_num_elts() const { return num_elts_total; }
@@ -274,6 +274,16 @@ public:
   // whether elt e was in the DS
   [[nodiscard]] bool has(key_type e) const;
   [[nodiscard]] bool has_with_print(key_type e) const;
+
+	[[nodiscard]] auto value(key_type e) const {
+		static_assert(!binary);
+		if constexpr (num_types == 1) {
+			return std::get<0>(value_internal(e));
+		} else {
+			return value_internal(e);
+		}
+
+	}
 
   // return the next [length] sorted elts greater than or equal to start
   auto sorted_range(key_type start, size_t length);
@@ -900,7 +910,7 @@ unsigned short LeafDS<log_size, header_size, block_size, key_type, Ts...>::count
 #if !AVX512 || DEBUG
 	// count number of nonzero elts in this block
 	uint64_t correct_count = 0;
-	SOA_type::template map_range_static(array.data(), N, [&correct_count](auto key) {correct_count += key != 0;}, block_start, block_end);
+	SOA_type::template map_range_static(array.data(), N, [&correct_count](auto key, auto... values) {correct_count += key != 0;}, block_start, block_end);
 #if !AVX512
 	return correct_count;
 #endif
@@ -1153,7 +1163,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 				size_t j = blocks_start + block_size;
 				// find the first zero slot in the block
 				// TODO: this didn't work (didn't find the first zero)
-				SOA_type::template map_range_with_index_static(array.data(), N, [&j](auto index, auto key) {
+				SOA_type::template map_range_with_index_static(array.data(), N, [&j](auto index, auto key, auto... values) {
 					if (key == 0) {
 						j = std::min(index, j);
 					}
@@ -1593,6 +1603,23 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::has(key_type e)
 	// otherwise search in insert log and rest of DS
 	auto idx = get_index(e);
 	return (idx != N);
+}
+template <size_t log_size, size_t header_size, size_t block_size,
+          typename key_type, typename... Ts>
+typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::value_type
+LeafDS<log_size, header_size, block_size, key_type, Ts...>::value_internal(
+    key_type e) const {
+			// first check if it is in the delete log
+  for (size_t i = log_size - 1; i > log_size - num_deletes_in_log - 1; i--) {
+    if (blind_read_key(i) == e) {
+      return {};
+    }
+  }
+  auto idx = get_index(e);
+	if (idx == N) {
+		return {};
+	}
+	return leftshift_tuple(blind_read(idx));
 }
 
 // return true iff element exists in the data structure
@@ -2229,7 +2256,7 @@ key_type LeafDS<log_size, header_size, block_size, key_type, Ts...>::split(LeafD
 #endif
 		size_t j = blocks_start + block_size;
 		// find the first zero slot in the block
-		SOA_type::template map_range_with_index_static(array.data(), N, [&j](auto index, auto key) {
+		SOA_type::template map_range_with_index_static(array.data(), N, [&j](auto index, auto key, auto... values) {
 			if (key == 0) {
 				j = std::min(index, j);
 			}
