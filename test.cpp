@@ -1712,6 +1712,160 @@ static long get_usecs() {
   return 0;
 }
 
+
+[[nodiscard]] int max_2_test_templated(uint32_t el_count) {
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds;
+  std::mt19937 rng(0);
+  std::uniform_int_distribution<key_type> dist_el(1, N * 16);
+
+  std::vector<key_type> checker;
+  checker.reserve(el_count);
+  std::vector<key_type> elts;
+  std::vector<key_type> elts_sorted;
+
+  // add some elements
+  for (uint32_t i = 0; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    elts.push_back(el);
+    if (!std::count(elts_sorted.begin(), elts_sorted.end(), el)) {
+      elts_sorted.push_back(el);
+    }
+    // add to leafDS
+    ds.insert(el);
+
+    // add to sorted vector
+    // todo: doesn't work, last elt is set to 0 sometimes
+    size_t idx = 0;
+    for(; idx < checker.size(); idx++) {
+      if(checker[idx] == el) {
+        break;
+      } else if (checker[idx] > el) {
+        break;
+      }
+    }
+    if(checker.size() == 0 || checker[idx] != el) {
+      checker.insert(checker.begin() + idx, el);
+    }
+
+    if (!ds.has(el)) {
+      ds.print();
+      printf("don't have something, %lu, we inserted while inserting "
+             "elements\n",
+             el);
+      return -1;
+    }
+  }
+
+  // Verify key_at_sorted_index against sorted elts
+  std::sort(elts_sorted.begin(), elts_sorted.end());
+
+  // for (int i = 0; i < elts_sorted.size(); i++) {
+  //   printf("elts_sorted: %lu \t checker: %lu\n", elts_sorted[i], checker[i]);
+  // }
+
+  key_type leaf_max, leaf_second_max;
+  ds.get_max_2(&leaf_max, &leaf_second_max, elts_sorted.size());
+
+  if (leaf_max != elts_sorted[elts_sorted.size() - 1]) {
+    printf("Should find max key %lu but instead found %lu", elts_sorted[elts_sorted.size() - 1], leaf_max);
+    ds.print();
+    return -1;
+  }
+  if (leaf_second_max != elts_sorted[elts_sorted.size() - 2]) {
+    printf("Should find max key %lu but instead found %lu", elts_sorted[elts_sorted.size() - 2], leaf_second_max);
+    ds.print();
+    return -1;
+  }
+
+  printf("\n*** finished inserting elts ***\n");
+  printf("num elts = %lu\n", checker.size());
+  // then remove all the stuff we added
+  for (int cur_i = 0; cur_i < el_count; cur_i ++ ) {
+    auto el = elts[cur_i];
+    ds.remove(el);
+    elts_sorted.erase(std::remove(elts_sorted.begin(), elts_sorted.end(), el), elts_sorted.end());
+    printf("removed elem %lu\n", el);
+
+    // Check key_at_sorted_index midway through deletes
+    if (cur_i == el_count / 2) {
+      std::sort(elts_sorted.begin(), elts_sorted.end());
+     
+      printf("***BEFORE FLUSHING**\n\n");
+      ds.print();
+      printf("sorted size %lu\n", elts_sorted.size());
+      key_type leaf_max, leaf_second_max;
+      ds.get_max_2(&leaf_max, &leaf_second_max, elts_sorted.size());
+
+      if (leaf_max != elts_sorted[elts_sorted.size() - 1]) {
+        printf("after dels, Should find max key %lu but instead found %lu", elts_sorted[elts_sorted.size() - 1], leaf_max);
+        ds.print();
+        return -1;
+      }
+      if (leaf_second_max != elts_sorted[elts_sorted.size() - 2]) {
+        printf("after dels, Should find max key %lu but instead found %lu", elts_sorted[elts_sorted.size() - 2], leaf_second_max);
+        ds.print();
+        return -1;
+      }
+    }
+    
+    size_t i = 0;
+    for(; i < checker.size(); i++) {
+	    if (checker[i] == el) {
+		    break;
+	    }
+    }
+    if(i < checker.size()) {
+	    tbassert(i < checker.size(), "el = %lu, i == checker_size == %lu\n", el, checker.size());
+	    tbassert(checker[i] == el, "checker[%lu] = %lu, el = %lu\n", i, checker[i], el);
+	    checker.erase(checker.begin() + i);
+	    printf("\tdeleting elt %lu (checker[%lu] = %lu) from vector\n", el, i, checker[i]);
+	    printf("\tafter delete, num elts in vector = %lu\n", checker.size());
+    }
+    if (ds.has(el)) {
+      ds.print();
+      printf("has %lu but should have deleted\n", el);
+      assert(false);
+      return -1;
+    }
+		
+    // check with sum
+    uint64_t sum = ds.sum_keys_with_map();
+    uint64_t sum_direct = ds.sum_keys_direct();
+
+    uint64_t correct_sum = 0;
+    for (auto elt : checker) {
+      correct_sum += elt;
+    }
+    printf("correct sum %lu\n", correct_sum);
+
+    if (correct_sum != sum) {
+      ds.print();
+      printf("incorrect sum keys with map\n");
+      tbassert(correct_sum == sum, "got sum %lu, should be %lu\n", sum, correct_sum);
+    }
+    if (correct_sum != sum_direct) {
+      ds.print();
+      printf("incorrect sum keys with subtraction\n");
+      tbassert(correct_sum == sum_direct, "got sum %lu, should be %lu\n", sum_direct, correct_sum);
+    }
+    printf("got sum %lu\n", sum);
+    printf("got sum direct %lu\n", sum_direct);
+
+    // do range queries and check them against sorted list
+  }
+}
+
+
+[[nodiscard]] int max_2_test(uint32_t el_count) {
+  int r = 0;
+  r = max_2_test_templated(el_count);
+  if (r) {
+    return r;
+  }
+
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
 
   cxxopts::Options options("LeafDStester",
@@ -1734,7 +1888,8 @@ int main(int argc, char *argv[]) {
     ("key_at_sorted_index_test", "verify correctness")
     ("merge_test", "verify correctness")
     ("shift_left_test", "verify correctness")
-    ("shift_right_test", "verify correctness");
+    ("shift_right_test", "verify correctness")
+    ("max_2_test", "verify correctness");
     // ("help","Print help");
   // clang-format on
 
@@ -1787,6 +1942,10 @@ int main(int argc, char *argv[]) {
 
   if (result["shift_right_test"].as<bool>()) {
     return shift_right_test(el_count);
+  }
+
+  if (result["max_2_test"].as<bool>()) {
+    return max_2_test(el_count);
   }
 
   return 0;

@@ -15,6 +15,7 @@
 #include <type_traits>
 #include <immintrin.h>
 #include <typeinfo>
+#include <set>
 
 
 #if DEBUG==1
@@ -34,6 +35,9 @@
 
 #define STATS 0
 #define DEBUG_PRINT 0
+
+static uint64_t debug_counter = 0;
+
 
 static uint64_t one[128] = {
   1ULL << 0, 1ULL << 1, 1ULL << 2, 1ULL << 3, 1ULL << 4, 1ULL << 5, 1ULL << 6, 1ULL << 7, 1ULL << 8, 1ULL << 9,
@@ -200,6 +204,7 @@ public:
   void shift_right(LeafDS<log_size, header_size, block_size, key_type, Ts...>* left, int shiftnum, int left_num_elts);
   key_type& get_key_at_sorted_index_nonconst(size_t i);
   key_type& get_key_at_sorted_index(size_t i) const;
+  key_type& get_key_at_sorted_index_with_print(size_t i) const;
   size_t get_element_at_sorted_index(size_t i);
   size_t get_num_elements();
 
@@ -222,7 +227,7 @@ private:
 
 	// helpers for range query
 	void sort_array_range(void *base_array, size_t size, size_t start_idx, size_t end_idx);
-	inline bool is_in_delete_log(key_type key);
+	inline bool is_in_delete_log(key_type key) const;
 	auto get_sorted_block_copy(size_t block_idx);
 
 
@@ -1806,7 +1811,7 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sum_keys_di
 
 // return true if the given key is going to be deleted
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-inline bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::is_in_delete_log(key_type key) {
+inline bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::is_in_delete_log(key_type key) const {
 	for(size_t j = log_size - 1; j > log_size - 1 - num_deletes_in_log; j--) {
 		if(blind_read_key(j) == key) { return true; }
 	}
@@ -2423,11 +2428,117 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::merge(LeafDS<lo
 }
 
 // assumes manual_num_elts == true size of leafds
+// maxkey and secondmaxkey inits to 0
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 void LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_max_2(key_type* max_key, key_type* second_max_key, int manual_num_elts) {
+#if DEBUG
+	debug_counter++;
+	*max_key = get_key_at_sorted_index(manual_num_elts - 1);
+	*second_max_key = get_key_at_sorted_index(manual_num_elts - 2);
+	return;
+
+	// actually broken get_key, found incorrect max elem 10116587902669021498, should find 10117366636722488163, debug counter = 28389
+	// if (debug_counter == 28389) {
+	// 	printf("this is the broken state\n");
+	// 	get_key_at_sorted_index_with_print(manual_num_elts - 1);
+	// 	print();
+	// 	// printf("actually broken get_key, found incorrect max elem 10116587902669021498, should find 10117366636722488163, debug counter = 28389");
+	// } 
+
+
+	key_type& real_max = get_key_at_sorted_index_nonconst(manual_num_elts - 1);
+	key_type& real_second_max = get_key_at_sorted_index_nonconst(manual_num_elts - 2);
+	// the difference between the nonconst and const versions are the references they return
+	// value wise they seem to return the same thing
+	// but because the nonconst one flushes deletes and inserts, it wouldnt' make sense to return the same reference
+	// so why does the btree seem to care about the difference?
+
+	if (*max_key != real_max) {
+		printf("actually broken get_key, found incorrect max elem %lu, should find %lu, debug counter = %lu\n", *max_key, real_max, debug_counter);
+		printf("debug counter = %lu", debug_counter);
+		print();
+		// exit();
+	}
+	if (*second_max_key != real_second_max) {
+		printf("actually broken get_key, found incorrect second max elem %lu, should find %lu, debug counter = %lu\n", *second_max_key, real_max, debug_counter);
+		printf("debug counter = %lu", debug_counter);
+		print();
+		// exit();
+	}
+	if (max_key != &real_max) {
+		printf("maybe broken get_key, found incorrect max elem %lu at reference %lu, should find at reference %lu\n", *max_key, max_key, &real_max);
+		print();
+		// exit();
+	}
+	if (second_max_key != &real_second_max) {
+		printf("maybe broken get_key, found incorrect second max elem %lu at reference %lu, should find at reference %lu\n", *second_max_key, second_max_key, &real_max);
+		print();
+		// exit();
+	}
+#endif
 	*max_key = get_key_at_sorted_index_nonconst(manual_num_elts - 1);
 	*second_max_key = get_key_at_sorted_index_nonconst(manual_num_elts - 2);
 	return;
+
+	/*
+	// const implementation without knowing total number of elements
+	*max_key = 0;
+	*second_max_key = 0;
+	
+	if (blind_read_key(header_start) == 0) {
+		// if only the log exists, sweep through log
+		assert(num_inserts_in_log >= 2);
+		for (size_t i = 0; i < num_inserts_in_log; i++) {
+			if (blind_read_key(i) > *max_key) {
+				*second_max_key = *max_key;
+				*max_key = blind_read_key(i);
+			} else if ((blind_read_key(i) > *second_max_key)) {
+				*second_max_key =  blind_read_key(i);
+			}
+		}
+		return;
+	}
+
+	// if not, we go backwards from end of block via header
+	size_t last_header = blocks_start - 1;
+	size_t cur_block = num_blocks - 1;
+	size_t cur_block_count = count_block(cur_block);
+
+	while (!(*max_key) || !(*second_max_key)) {
+		for (size_t i = blocks_start + cur_block * block_size + (cur_block_count - 1); i >= blocks_start + cur_block * block_size; i--) {
+			if (is_in_delete_log(blind_read_key(i))) {
+				continue;
+			}
+			// if we haven't set maxkey yet, set it
+			if (!(*max_key)) {
+				*max_key = blind_read_key(i);
+			} else if (!(*second_max_key)) {
+				*second_max_key = blind_read_key(i);
+			}
+		}
+		if (!(*max_key) && !is_in_delete_log(blind_read_key(last_header))) {
+			*max_key = blind_read_key(last_header);
+		} else if (!(*second_max_key) && !is_in_delete_log(blind_read_key(last_header))) {
+			*second_max_key = blind_read_key(last_header);
+		}
+		cur_block--;
+		last_header--;
+		cur_block_count = count_block(cur_block);
+	}
+
+	// finally check if anything in insert log beats our block max keys
+	if (num_inserts_in_log > 0) {
+		for (size_t i = 0; i < num_inserts_in_log; i++) {
+			if (blind_read_key(i) > *max_key) {
+				*second_max_key = *max_key;
+				*max_key = blind_read_key(i);
+			} else if ((blind_read_key(i) > *second_max_key)) {
+				*second_max_key =  blind_read_key(i);
+			}
+		}
+	}
+	return;
+	*/
 }
 
 
@@ -2581,6 +2692,70 @@ key_type& LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_key_at
 // Assumes i < get_num_elts
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 key_type& LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_key_at_sorted_index(size_t target_i) const {
+/*
+	// TODO! FIX THE FASTER VERSION
+	// this very slow version is correct but too slow, the current version doesn't match up with the nonconst version in some max_2 calls
+	
+	// printf("\t looking for target_i %u\n", target_i);
+	// make sorted copies of insert and delete log, note we only need keys
+	std::vector<key_type> sorted_insert_log;
+	std::vector<key_type> sorted_delete_log;
+
+	std::set<key_type> all_elems;
+	std::vector<key_type> all_elems_sorted;
+	// count the number of elements in each block
+	unsigned short count_per_block[num_blocks];
+
+	// TODO: merge these loops and count the rest in global redistribute
+	for (size_t i = 0; i < num_blocks; i++) {
+		count_per_block[i] = count_block(i);
+	}
+
+	size_t blocks_ptr_1 = header_start;
+	size_t cur_block_1 = 0;
+	size_t start_of_cur_block_1 = 0;
+	while(cur_block_1 < num_blocks) {
+		all_elems.insert(blind_read_key(blocks_ptr_1));
+		advance_block_ptr(&blocks_ptr_1, &cur_block_1, &start_of_cur_block_1, count_per_block);
+	}
+	// printf("size of all elems in blocks + header: %lu\n",all_elems.size());
+	for (size_t i = log_size - num_deletes_in_log; i < log_size; i++) {
+		all_elems.erase(blind_read_key(i));
+	}
+	// printf("size of all elems in blocks + header after erasing delete log: %lu\n", all_elems.size());
+	for (size_t i = 0; i < num_inserts_in_log; i++) {
+		all_elems.insert(blind_read_key(i));
+	}
+	// printf("size of all elems in blocks + header after adding insert log: %lu\n", all_elems.size());
+
+	for (auto e: all_elems) {
+		all_elems_sorted.push_back(e);
+	}
+	std::sort(all_elems_sorted.begin(), all_elems_sorted.end());
+	// printf("size of all elems sorted in blocks + header: %lu\n", all_elems_sorted.size());
+	// printf("printing current sorted full leafds: \n");
+
+	key_type target_key = all_elems_sorted[target_i];
+	
+	for (size_t i = 0; i < num_inserts_in_log; i++) {
+		if (target_key == blind_read_key(i)) {
+			return std::get<0>(blind_read(i));
+		}
+	}
+
+	blocks_ptr_1 = header_start;
+	cur_block_1 = 0;
+	start_of_cur_block_1 = 0;
+	while(cur_block_1 < num_blocks) {
+		if (target_key == blind_read_key(blocks_ptr_1)) {
+			return std::get<0>(blind_read(blocks_ptr_1));
+		}
+		advance_block_ptr(&blocks_ptr_1, &cur_block_1, &start_of_cur_block_1, count_per_block);
+	}
+*/
+
+// /*
+
 	// make sorted copies of insert and delete log, note we only need keys
 	std::vector<key_type> sorted_insert_log;
 	std::vector<key_type> sorted_delete_log;
@@ -2786,6 +2961,7 @@ key_type& LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_key_at
 		in_log = false;
 	}
 
+	// find the address of the actual key in leafDS and return that
 	if (in_log) {
 		// find key and return address to insert log
 		for (size_t i = 0; i < num_inserts_in_log; i++) {
@@ -2804,6 +2980,7 @@ key_type& LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_key_at
 			}
 		}
 	}
+// */
 }
 
 // Assumes i < get_num_elts
@@ -2888,6 +3065,7 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_element_a
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_num_elements() {
 	// printf("called not safe get_num_elements\n");
+	// return num_elts_total;
 	// flush delete log
 	if (num_deletes_in_log > 0) {
 		sort_range(log_size - num_deletes_in_log, log_size);
@@ -2954,4 +3132,277 @@ size_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_num_eleme
 	// num_elts_total should be safe now
 	// printf("count via count up elets : %lu ", count_up_elts());
 	return num_elts_total;
+}
+
+// Assumes i < get_num_elts
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+key_type& LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_key_at_sorted_index_with_print(size_t target_i) const {
+	printf("\t looking for target_i %u\n", target_i);
+	// make sorted copies of insert and delete log, note we only need keys
+	std::vector<key_type> sorted_insert_log;
+	std::vector<key_type> sorted_delete_log;
+
+	std::set<key_type> all_elems;
+	std::vector<key_type> all_elems_sorted;
+	// count the number of elements in each block
+	unsigned short count_per_block[num_blocks];
+
+	// TODO: merge these loops and count the rest in global redistribute
+	for (size_t i = 0; i < num_blocks; i++) {
+		count_per_block[i] = count_block(i);
+	}
+
+	size_t blocks_ptr_1 = header_start;
+	size_t cur_block_1 = 0;
+	size_t start_of_cur_block_1 = 0;
+	while(cur_block_1 < num_blocks) {
+		all_elems.insert(blind_read_key(blocks_ptr_1));
+		advance_block_ptr(&blocks_ptr_1, &cur_block_1, &start_of_cur_block_1, count_per_block);
+	}
+	printf("size of all elems in blocks + header: %lu\n",all_elems.size());
+	for (size_t i = log_size - num_deletes_in_log; i < log_size; i++) {
+		all_elems.erase(blind_read_key(i));
+	}
+	printf("size of all elems in blocks + header after erasing delete log: %lu\n", all_elems.size());
+	for (size_t i = 0; i < num_inserts_in_log; i++) {
+		all_elems.insert(blind_read_key(i));
+	}
+	printf("size of all elems in blocks + header after adding insert log: %lu\n", all_elems.size());
+
+	for (auto e: all_elems) {
+		all_elems_sorted.push_back(e);
+	}
+	std::sort(all_elems_sorted.begin(), all_elems_sorted.end());
+	printf("size of all elems sorted in blocks + header: %lu\n", all_elems_sorted.size());
+	printf("printing current sorted full leafds: \n");
+	for (auto e: all_elems_sorted) {
+		printf("\t%lu, ", e);
+	}
+	printf("\n");
+
+	for (size_t i = 0; i < num_inserts_in_log; i++) {
+		sorted_insert_log.push_back(blind_read_key(i));
+	}
+	for (size_t i = log_size - num_deletes_in_log; i < log_size; i++) {
+		sorted_delete_log.push_back(blind_read_key(i));
+	}
+	std::sort(sorted_insert_log.begin(), sorted_insert_log.end());
+	std::sort(sorted_delete_log.begin(), sorted_delete_log.end());
+
+	// two pointer const search for key at index i, need to check for deletes
+	size_t log_ptr = 0;
+	size_t delete_ptr = 0;
+	size_t header_ptr = header_start;
+	size_t sorted_block_ptr = 0;
+	size_t cur_block = 0;
+	size_t curr_index = 0;
+	bool in_header = true;
+
+	// on leaving header, initialize this to the current block
+	std::vector<key_type> sorted_curr_block;
+	unsigned short curr_block_count = 0;
+
+	while ((log_ptr < num_inserts_in_log || cur_block < num_blocks) && curr_index < target_i) {
+		// first check if either of the ptrs are pointing to a deleted elt and incr delete ptr
+		// check if pointing to insert log
+		if (delete_ptr < num_deletes_in_log && log_ptr < num_inserts_in_log && sorted_delete_log[delete_ptr] == sorted_insert_log[log_ptr]) {
+			// !!! this actually only occurs if insert was called after delete, meaning it should be inserted
+			// because remove() checks insert log and clears it if insert was called first
+			// this means we can ignore the delete
+			// log_ptr++;
+			delete_ptr++;
+			continue;
+		}
+		// check if header_ptr or sorted_block_ptr is pointing to a deleted elem
+		if (delete_ptr < num_deletes_in_log && in_header && sorted_delete_log[delete_ptr] == blind_read_key(header_ptr)) {
+			// going into a new block
+			curr_block_count = count_block(cur_block);
+			if (curr_block_count) {
+				// block has elems to go into, set the sorted block
+				in_header = false;
+				for (int i = 0; i < curr_block_count; i++) {
+					sorted_curr_block.push_back(blind_read_key(blocks_start + block_size * cur_block + i));
+				}
+				std::sort(sorted_curr_block.begin(), sorted_curr_block.end());
+			} else {
+				// empty block, increment header
+				in_header = true;
+				cur_block++;
+				header_ptr++;
+			}
+			delete_ptr++;
+			continue;
+		} else if (delete_ptr < num_deletes_in_log && !in_header && sorted_delete_log[delete_ptr] == sorted_curr_block[sorted_block_ptr]) {
+			if (sorted_block_ptr == curr_block_count - 1) {
+				// we are on last elem in block and need to go back to header
+				sorted_curr_block.clear();
+				curr_block_count = 0;
+				sorted_block_ptr = 0;
+				in_header = true;
+				cur_block++;
+				header_ptr++;
+			} else {
+				in_header = false;
+				sorted_block_ptr++;
+			}
+			delete_ptr++;
+			continue;
+		}
+
+		bool increment_block_ptr = false;
+		// check which ptr to increment
+		if (log_ptr < num_inserts_in_log && cur_block < num_blocks) {
+			key_type block_key = in_header ? blind_read_key(header_ptr) : sorted_curr_block[sorted_block_ptr];
+			if (sorted_insert_log[log_ptr] < block_key) {
+				log_ptr++;
+			} else if (sorted_insert_log[log_ptr] == block_key) {
+				// on duplicate insert in log and blocks, we want to increment both ptrs
+				log_ptr++;
+				increment_block_ptr = true;
+			} else if (block_key == 0 && cur_block == 0) {
+				// edge case of first header block being 0 pre-first flush, we still want to increment log_ptr here
+				log_ptr++;
+			} else {
+				increment_block_ptr = true;
+			}
+		} else if (log_ptr < num_inserts_in_log) {
+			log_ptr++;
+		} else {
+			increment_block_ptr = true;
+		}
+
+		// increment block ptr depending on whether we're in header or block
+		if (increment_block_ptr) {
+			if (in_header) {
+				// going into a new block
+				curr_block_count = count_block(cur_block);
+				if (curr_block_count) {
+					// block has elems to go into, set the sorted block
+					in_header = false;
+					for (int i = 0; i < curr_block_count; i++) {
+						sorted_curr_block.push_back(blind_read_key(blocks_start + block_size * cur_block + i));
+					}
+					std::sort(sorted_curr_block.begin(), sorted_curr_block.end());
+				} else {
+					// empty block, increment header
+					in_header = true;
+					cur_block++;
+					header_ptr++;
+				}
+			} else {
+				if (sorted_block_ptr == curr_block_count - 1) {
+					// we are on last elem in block and need to go back to header
+					sorted_curr_block.clear();
+					curr_block_count = 0;
+					sorted_block_ptr = 0;
+					in_header = true;
+					cur_block++;
+					header_ptr++;
+				} else {
+					in_header = false;
+					sorted_block_ptr++;
+				}
+			}
+		}
+		curr_index++;
+	}
+	printf("printing current sorted block: \n");
+	for (auto e: sorted_curr_block) {
+		printf("\t%lu, ", e);
+	}
+	printf("\n");
+
+	while (delete_ptr < num_deletes_in_log) {
+		if (log_ptr < num_inserts_in_log && sorted_delete_log[delete_ptr] == sorted_insert_log[log_ptr]) {
+			// !!! this actually only occurs if insert was called after delete, meaning it should be inserted
+			// because remove() checks insert log and clears it if insert was called first
+			// this means we can ignore the delete
+			// log_ptr++;
+			delete_ptr++;
+			continue;
+		}
+		// check if header_ptr or sorted_block_ptr is pointing to a deleted elem
+		if (in_header && sorted_delete_log[delete_ptr] == blind_read_key(header_ptr)) {
+			// going into a new block
+			curr_block_count = count_block(cur_block);
+			if (curr_block_count) {
+				// block has elems to go into, set the sorted block
+				in_header = false;
+				for (int i = 0; i < curr_block_count; i++) {
+					sorted_curr_block.push_back(blind_read_key(blocks_start + block_size * cur_block + i));
+				}
+				std::sort(sorted_curr_block.begin(), sorted_curr_block.end());
+			} else {
+				// empty block, increment header
+				in_header = true;
+				cur_block++;
+				header_ptr++;
+			}
+			delete_ptr++;
+			continue;
+		} else if (!in_header && sorted_delete_log[delete_ptr] == sorted_curr_block[sorted_block_ptr]) {
+			if (sorted_block_ptr == curr_block_count - 1) {
+				// we are on last elem in block and need to go back to header
+				sorted_curr_block.clear();
+				curr_block_count = 0;
+				sorted_block_ptr = 0;
+				in_header = true;
+				cur_block++;
+				header_ptr++;
+			} else {
+				in_header = false;
+				sorted_block_ptr++;
+			}
+			delete_ptr++;
+			continue;
+		} else {
+			break;
+		}
+	}
+
+	// now we have the correct key to return, but we need to return the pointer to the actual address in leafDS, not a temp copy
+	bool in_log;
+	key_type target_key = 0;
+	key_type block_key = in_header ? blind_read_key(header_ptr) : sorted_curr_block[sorted_block_ptr];
+
+	if (log_ptr < num_inserts_in_log && cur_block < num_blocks) {
+		// printf("hi\n");
+		if (sorted_insert_log[log_ptr] <= block_key) {
+			target_key = sorted_insert_log[log_ptr];
+			in_log = true;
+		} else if (block_key == 0 && cur_block == 0) {
+			// edge case of first header block being 0 pre-first flush
+			target_key = sorted_insert_log[log_ptr];
+			in_log = true;
+		} else {
+			target_key = block_key;
+			in_log = false;
+		}
+	} else if (log_ptr < num_inserts_in_log) {
+		target_key = sorted_insert_log[log_ptr];
+		in_log = true;
+	} else {
+		target_key = block_key;
+		in_log = false;
+	}
+
+	// find the address of the actual key in leafDS and return that
+	if (in_log) {
+		// find key and return address to insert log
+		for (size_t i = 0; i < num_inserts_in_log; i++) {
+			if (blind_read_key(i) == target_key) {
+				return std::get<0>(blind_read(i));
+			}
+		}
+	} else if (in_header) {
+		// header should be sorted so we can immediately return
+		return std::get<0>(blind_read(header_ptr));
+	} else {
+		// need to find key in unsorted block and return address
+		for (size_t i = blocks_start + cur_block * block_size; i < blocks_start + cur_block * block_size + curr_block_count; i++) {
+			if (blind_read_key(i) == target_key) {
+				return std::get<0>(blind_read(i));
+			}
+		}
+	}
 }
