@@ -1263,6 +1263,7 @@ static long get_usecs() {
 }
 
 [[nodiscard]] int merge_test_templated(uint32_t el_count) {
+  // for (uint32_t el_count = 32; el_count < el_count_max; el_count++) {
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_left;
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_right;
   std::mt19937 rng(0);
@@ -1364,7 +1365,17 @@ static long get_usecs() {
 
   printf("size of elts remaining: %lu\n", elts_remaining_1.size());
 
+  printf("after deletes, premerge right***\n");
+  ds_right_1.print();
+  printf("after deletes, premerge left***\n");
+  ds_left_1.print();
+
   ds_left_1.merge(&(ds_right_1));
+
+  printf("after deletes, postmerge right***\n");
+  ds_right_1.print();
+  printf("after deletes, postmerge left***\n");
+  ds_left_1.print();
 
   // Check if left leafDS has all elements from left and right after merge
   if (ds_right_1.get_num_elements() != 0) {
@@ -1381,6 +1392,7 @@ static long get_usecs() {
       return -1;
     }
   } 
+  // }
   return 0;
 }
 
@@ -1395,6 +1407,7 @@ static long get_usecs() {
 }
 
 [[nodiscard]] int shift_left_test_templated(uint32_t el_count) {
+  // for (uint32_t el_count = 32; el_count <= el_count_max; el_count++) {
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_left;
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_right;
   std::mt19937 rng(0);
@@ -1478,6 +1491,12 @@ static long get_usecs() {
   unsigned int shiftnum = (ds_right.get_num_elements() - ds_left.get_num_elements()) >> 1;
   printf("shifting real %lu\n", shiftnum);
 
+  if (ds_left.get_num_elements() >= ds_right.get_num_elements()) {
+    printf("right has fewer than left?? skipping. \n");
+    // continue;
+    return -1;
+  }
+
   ds_left.shift_left(&(ds_right), shiftnum);
 
   printf("ds_right num elems post_shift %lu\n", ds_right.get_num_elements());
@@ -1540,6 +1559,7 @@ static long get_usecs() {
       return -1;
     }
   }
+  // }
   return 0;
 }
 
@@ -1554,6 +1574,7 @@ static long get_usecs() {
 }
 
 [[nodiscard]] int shift_right_test_templated(uint32_t el_count) {
+  // for (uint32_t el_count = 32; el_count <= el_count_max; el_count++) {
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_left;
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds_right;
   std::mt19937 rng(0);
@@ -1630,14 +1651,23 @@ static long get_usecs() {
     return -1;
   }
 */
+  // printf("preshift right***\n");
+  // ds_right.print();
+  // printf("preshift left***\n");
+  // ds_left.print();
 
   printf("ds_right num elems = %lu, correct = %lu \n", ds_right.get_num_elements(), elts_right_remaining_1.size());
   printf("ds_left num elems = %lu, correct = %lu \n", ds_left.get_num_elements(), elts_left_remaining_1.size());
   printf("shifting diff %lu\n", ds_left.get_num_elements() - ds_right.get_num_elements());
+  if (ds_left.get_num_elements() <= ds_right.get_num_elements()) {
+    printf("left has fewer than right?? skipping. \n");
+    // continue;
+    return -1;
+  }
   unsigned int shiftnum = (ds_left.get_num_elements() - ds_right.get_num_elements()) >> 1;
   printf("shifting real %lu\n", shiftnum);
 
-  ds_right.shift_right(&(ds_left), shiftnum, elts_left_remaining_1.size());
+  ds_right.shift_right(&(ds_left), shiftnum);
 
   printf("ds_right num elems post_shift %lu\n", ds_right.get_num_elements());
   printf("ds_left num elems post_shift %lu\n",ds_left.get_num_elements());
@@ -1661,12 +1691,17 @@ static long get_usecs() {
   }
 */
 
+  // printf("*** right ***\n");
+  // ds_right.print();
+  // printf("*** left ***\n");
+  // ds_left.print();
+
   // Check if original elems in right exist in right
   for (uint32_t i = 0; i < elts_right_remaining_1.size(); i++) {
     auto el = elts_right_remaining_1[i];
     if (!ds_right.has(el)) {
       ds_right.print();
-      printf("Missing elt in right leaf after shift right from orig, elt: %lu index:%u \n", el, i);
+      printf("Missing elt in right leaf after shift right from orig, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
       return -1;
     }
   }
@@ -1676,12 +1711,12 @@ static long get_usecs() {
     auto el = elts_left_remaining_1[i];
     if (!ds_right.has(el)) {
       ds_right.print();
-      printf("Missing elt in right leaf after shift right from left, elt: %lu index:%u \n", el, i);
+      printf("Missing elt in right leaf after shift right from left, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
       return -1;
     }
     if (ds_left.has(el)) {
       ds_left.print();
-      printf("Elt not removed from left leaf after shift right from left, elt: %lu index:%u \n", el, i);
+      printf("Elt not removed from left leaf after shift right from left, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
       return -1;
     }
   }
@@ -1690,15 +1725,16 @@ static long get_usecs() {
     auto el = elts_left_remaining_1[i];
     if (!ds_left.has(el)) {
       ds_left.print();
-      printf("Missing elt in left leaf after shift right, elt: %lu index:%u \n", el, i);
+      printf("Missing elt in left leaf after shift right, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
       return -1;
     }
     if (ds_right.has(el) && !std::count(elts_right_remaining_1.begin(), elts_right_remaining_1.end(), el)) {
       ds_right.print();
-      printf("Elt should not exist in right leaf after shift right, elt: %lu index:%u \n", el, i);
+      printf("Elt should not exist in right leaf after shift right, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
       return -1;
     }
   }
+  // }
   return 0;
 }
 
@@ -1764,7 +1800,7 @@ static long get_usecs() {
   // }
 
   key_type leaf_max, leaf_second_max;
-  ds.get_max_2(&leaf_max, &leaf_second_max, elts_sorted.size());
+  ds.get_max_2(&leaf_max, &leaf_second_max);
 
   if (leaf_max != elts_sorted[elts_sorted.size() - 1]) {
     printf("Should find max key %lu but instead found %lu", elts_sorted[elts_sorted.size() - 1], leaf_max);
@@ -1790,11 +1826,11 @@ static long get_usecs() {
     if (cur_i == el_count / 2) {
       std::sort(elts_sorted.begin(), elts_sorted.end());
      
-      printf("***BEFORE FLUSHING**\n\n");
-      ds.print();
+      // printf("***BEFORE FLUSHING**\n\n");
+      // ds.print();
       printf("sorted size %lu\n", elts_sorted.size());
       key_type leaf_max, leaf_second_max;
-      ds.get_max_2(&leaf_max, &leaf_second_max, elts_sorted.size());
+      ds.get_max_2(&leaf_max, &leaf_second_max);
 
       if (leaf_max != elts_sorted[elts_sorted.size() - 1]) {
         printf("after dels, Should find max key %lu but instead found %lu", elts_sorted[elts_sorted.size() - 1], leaf_max);
@@ -1836,20 +1872,33 @@ static long get_usecs() {
     for (auto elt : checker) {
       correct_sum += elt;
     }
-    printf("correct sum %lu\n", correct_sum);
 
-    if (correct_sum != sum) {
-      ds.print();
-      printf("incorrect sum keys with map\n");
-      tbassert(correct_sum == sum, "got sum %lu, should be %lu\n", sum, correct_sum);
-    }
-    if (correct_sum != sum_direct) {
-      ds.print();
-      printf("incorrect sum keys with subtraction\n");
-      tbassert(correct_sum == sum_direct, "got sum %lu, should be %lu\n", sum_direct, correct_sum);
+    uint64_t correct_sum2 = 0;
+    for (auto elt : elts_sorted) {
+      correct_sum2 += elt;
     }
     printf("got sum %lu\n", sum);
     printf("got sum direct %lu\n", sum_direct);
+    printf("got sum correct %lu\n", correct_sum);
+    printf("got sum correct 2 %lu\n", correct_sum2);
+    printf("for el count %lu\n", el_count);
+
+    if (correct_sum2 != sum) {
+      ds.print();
+      printf("incorrect sum keys with map\n");
+      tbassert(correct_sum2 == sum, "got sum %lu, should be %lu\n", sum, correct_sum2);
+      return -1;
+    }
+    if (correct_sum2 != sum_direct) {
+      ds.print();
+      printf("incorrect sum keys with subtraction\n");
+      tbassert(correct_sum2 == sum_direct, "got sum %lu, should be %lu\n", sum_direct, correct_sum2);
+      return -1;
+    }
+    // printf("got sum %lu\n", sum);
+    // printf("got sum direct %lu\n", sum_direct);
+    // printf("got sum correct %lu\n", correct_sum);
+    // printf("for el count %lu\n", el_count);
 
     // do range queries and check them against sorted list
   }
