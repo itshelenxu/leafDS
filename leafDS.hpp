@@ -36,6 +36,7 @@
 #define STATS 0
 #define DEBUG_PRINT 0
 #define ASK_ABOUT 1
+#define AVX512_BROKEN 0
 
 static uint64_t debug_counter = 0;
 
@@ -762,7 +763,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 
 	[[maybe_unused]] bool correct_answer = false;
 	[[maybe_unused]] size_t test_i = start;
-#if !AVX512 || DEBUG
+#if !AVX512_BROKEN || DEBUG
 	// scalar version for correctness
 	const key_type key = std::get<0>(e);
 
@@ -779,11 +780,11 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 			break;
 		}
 	}
-#if !AVX512
+#if !AVX512_BROKEN
 	return correct_answer;
 #endif
 #endif
-#if AVX512
+#if AVX512_BROKEN
 	// vector version
 	if constexpr (type == BLOCK) {
 		assert(start % keys_per_vector == 0);
