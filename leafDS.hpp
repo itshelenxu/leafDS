@@ -17,7 +17,6 @@
 #include <typeinfo>
 #include <set>
 
-
 #if DEBUG==1
 #define ASSERT(PREDICATE, ...)                                                 \
   do {                                                                         \
@@ -37,6 +36,7 @@
 #define DEBUG_PRINT 0
 #define ASK_ABOUT 1
 #define AVX512_BROKEN 0
+#define INSERT_UPDATE 0
 
 static uint64_t debug_counter = 0;
 
@@ -797,8 +797,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 
 				assert(test_i == i);
 				assert((correct_answer == true));
-
+#if INSERT_UPDATE
 				update_val_at_index(e, i);
+#endif
 				return true;
 			}
 		}
@@ -822,8 +823,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 
 			ASSERT(test_i == idx, "test_i = %zu, i = %llu, mask = %d\n", test_i, idx, mask);
 			assert((correct_answer == true));
-
+#if INSERT_UPDATE
 			update_val_at_index(e, idx);
+#endif
 			return true;
 		}
 		vector_start += keys_per_vector;
@@ -846,7 +848,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 #if DEBUG_PRINT
 			printf("\tVECTOR LOOP FOUND AT IDX %lu\n", i);
 #endif
+#if INSERT_UPDATE
 			update_val_at_index(e, i);
+#endif
 			return true;
 		}
 		vector_start += keys_per_vector;
@@ -874,7 +878,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::update_in_range
 #if DEBUG_PRINT
 				printf("\tVECTOR END FOUND AT IDX %lu\n", i);
 #endif
+#if INSERT_UPDATE
 				update_val_at_index(e, i);
+#endif
 				assert((correct_answer == true));
 				return true;
 			}
@@ -994,7 +1000,9 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 #endif
 		// if it is in the header, update the header
 		if (blind_read_key(header_start + block_idx) == key_to_flush) {
+#if INSERT_UPDATE
 				copy_src_to_dest(i, header_start + block_idx);
+#endif
 #if DEBUG_PRINT
 				printf("found duplicate in header idx %zu of elt %lu\n", block_idx, key_to_flush);
 #endif
@@ -1509,6 +1517,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 #if DEBUG
 	assert(num_deletes_in_log + num_inserts_in_log < log_size);
 #endif
+	// delete log requires element_type
+	element_type elt_e;
+	std::get<0>(elt_e) = e;
 
 	// check if the element is in the insert log
 	bool was_insert = false;
@@ -1533,7 +1544,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 		auto result = find_key_in_range(log_size - num_deletes_in_log, log_size, e);
 		if (!result.first) { // if not in delete log, add it
 			num_deletes_in_log++;
-			blind_write(e, log_size - num_deletes_in_log); // grow left
+			blind_write(elt_e, log_size - num_deletes_in_log); // grow left
 		} else {
 			// printf("\tfound in delete log\n");
 		}
@@ -1543,7 +1554,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::remove(key_type
 			// printf("triggered edge case woo \n");
 		} else { // otherwise add it
 			num_deletes_in_log++;
-			blind_write(e, log_size - num_deletes_in_log);
+			blind_write(elt_e, log_size - num_deletes_in_log);
 		}
 	}
 
