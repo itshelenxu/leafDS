@@ -201,7 +201,7 @@ public:
 public:
   key_type split(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right);
   void merge(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right);
-  void get_max_2(key_type* max_key, key_type* second_max_key);
+  void get_max_2(key_type* max_key, key_type* second_max_key) const;
   void shift_left(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right, int shiftnum);
   void shift_right(LeafDS<log_size, header_size, block_size, key_type, Ts...>* left, int shiftnum);
   key_type& get_key_at_sorted_index_nonconst(size_t i);
@@ -230,7 +230,7 @@ private:
 	// helpers for range query
 	void sort_array_range(void *base_array, size_t size, size_t start_idx, size_t end_idx);
 	inline bool is_in_delete_log(key_type key) const;
-	auto get_sorted_block_copy(size_t block_idx);
+	auto get_sorted_block_copy(size_t block_idx) const;
 
 
 	inline std::pair<size_t, size_t> get_block_range(size_t block_idx) const;
@@ -293,10 +293,10 @@ public:
 	}
 
   // return the next [length] sorted elts greater than or equal to start
-  auto sorted_range(key_type start, size_t length);
+  auto sorted_range(key_type start, size_t length) const;
 
   // return all elts in the range [start, end]
-  auto unsorted_range(key_type start, key_type end);
+  auto unsorted_range(key_type start, key_type end) const;
 
   [[nodiscard]] size_t get_index_in_blocks(key_type e) const;
 
@@ -1914,7 +1914,7 @@ inline bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::is_in_de
 }
 
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_sorted_block_copy(size_t block_idx) {
+auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_sorted_block_copy(size_t block_idx) const {
 	assert(block_idx < num_blocks);
 #if DEBUG_PRINT
 	printf("get sorted block copy of block %lu with header %lu\n", block_idx, blind_read_key(header_start + block_idx));
@@ -1928,7 +1928,9 @@ auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_sorted_bloc
 #if DEBUG_PRINT
 		printf("\tcopy[0] = %lu\n", blind_read_key(header_start + block_idx));
 #endif
-		blind_write_array(block_copy.data(), block_size, blind_read(header_start + block_idx), 0);
+		// blind_write_array(block_copy.data(), block_size, blind_read(header_start + block_idx), 0);
+		SOA_type::get_static(block_copy.data(), block_size, 0) = blind_read(header_start + block_idx);
+		
 		elts_in_block_copy++;
 	}
 
@@ -1945,20 +1947,25 @@ auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_sorted_bloc
 #if DEBUG_PRINT
 			printf("\tcopy[%lu] = %lu\n", elts_in_block_copy, block_key);
 #endif
-			blind_write_array(block_copy.data(), block_size, blind_read(idx), elts_in_block_copy);
+			// blind_write_array(block_copy.data(), block_size, blind_read(idx), elts_in_block_copy);
+			SOA_type::get_static(block_copy.data(), block_size, elts_in_block_copy) = blind_read(idx);
 			elts_in_block_copy++;
 		}
 	}
 #if DEBUG_PRINT
 	printf("elts in copy = %lu\n", elts_in_block_copy);
 #endif
-	sort_array_range(block_copy.data(), block_size, 0, elts_in_block_copy);
+	// sort_array_range(block_copy.data(), block_size, 0, elts_in_block_copy);
+	auto start_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(block_copy.data(), block_size, 0);
+	auto end_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(block_copy.data(), block_size, elts_in_block_copy);
+	std::sort(start_sort, end_sort, [](auto lhs, auto rhs) { return std::get<0>(typename SOA_type::T(lhs)) < std::get<0>(typename SOA_type::T(rhs)); } );
+
 	return std::make_pair(block_copy, elts_in_block_copy);
 }
 
 // return a vector of element type
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::unsorted_range(key_type start, key_type end) {
+auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::unsorted_range(key_type start, key_type end) const {
 #if DEBUG_PRINT
 	printf("\n\n*** unsorted range [%lu, %lu] ***\n", start, end);
 #endif
@@ -1969,20 +1976,28 @@ auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::unsorted_range(
 	std::array<uint8_t, SOA_type::get_size_static(log_size)> deletes_copy = {0};
 
 	for(size_t i = 0; i < num_inserts_in_log; i++) {
-		blind_write_array(log_copy.data(), log_size, blind_read(i), i);
+		// blind_write_array(log_copy.data(), log_size, blind_read(i), i);
+		SOA_type::get_static(log_copy.data(), log_size, i) = blind_read(i);
 	}
-	sort_array_range(log_copy.data(), log_size, 0, num_inserts_in_log);
+	// sort_array_range(log_copy.data(), log_size, 0, num_inserts_in_log);
+	auto start_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(log_copy.data(), log_size, 0);
+	auto end_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(log_copy.data(), log_size, num_inserts_in_log);
+	std::sort(start_sort, end_sort, [](auto lhs, auto rhs) { return std::get<0>(typename SOA_type::T(lhs)) < std::get<0>(typename SOA_type::T(rhs)); } );
 
 	// copy all deletes into a log
 	size_t dest = 0;
 	for(size_t i = log_size - 1; i > log_size - num_deletes_in_log - 1; i++) {
-		blind_write_array(deletes_copy.data(), log_size, blind_read(i), dest);
+		// blind_write_array(deletes_copy.data(), log_size, blind_read(i), dest);
+		SOA_type::get_static(log_copy.data(), log_size, i) = blind_read(i);
 		dest++;
 	}
 
 	// sort delete log
 	assert(dest == num_deletes_in_log);
-	sort_array_range(deletes_copy.data(), log_size, 0, num_deletes_in_log);
+	// sort_array_range(deletes_copy.data(), log_size, 0, num_deletes_in_log);
+	start_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(deletes_copy.data(), log_size, 0);
+	end_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(deletes_copy.data(), log_size, num_deletes_in_log);
+	std::sort(start_sort, end_sort, [](auto lhs, auto rhs) { return std::get<0>(typename SOA_type::T(lhs)) < std::get<0>(typename SOA_type::T(rhs)); } );
 
 	// pre-process per block if something exists in the range, and the number of elts in the log that fall in the range
 	unsigned short log_per_block[num_blocks] = {0};
@@ -2191,19 +2206,28 @@ auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::unsorted_range(
 // return a vector of element type
 // TODO: make this apply function f to everything in the range
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_range(key_type start, size_t length) {
+auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_range(key_type start, size_t length) const {
 #if DEBUG_PRINT
 	printf("\n\n*** sorted range starting at %lu of length %lu ***\n", start, length);
 #endif
 
 	// copy log out-of-place and sort it
 	std::vector<element_type> output;
-	std::array<uint8_t, SOA_type::get_size_static(log_size)> log_copy = {0};
-	for(size_t i = 0; i < num_inserts_in_log; i++) {
-		blind_write_array(log_copy.data(), log_size, blind_read(i), i);
+
+	if (length == 0) {
+		return output;
 	}
 
-	sort_array_range(log_copy.data(), log_size, 0, num_inserts_in_log);
+	std::array<uint8_t, SOA_type::get_size_static(log_size)> log_copy = {0};
+	for(size_t i = 0; i < num_inserts_in_log; i++) {
+		// blind_write_array(log_copy.data(), log_size, blind_read(i), i);
+		SOA_type::get_static(log_copy.data(), log_size, i) = blind_read(i);
+	}
+
+	// sort_array_range(log_copy.data(), log_size, 0, num_inserts_in_log);
+	auto start_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(log_copy.data(), log_size, 0);
+	auto end_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(log_copy.data(), log_size, num_inserts_in_log);
+	std::sort(start_sort, end_sort, [](auto lhs, auto rhs) { return std::get<0>(typename SOA_type::T(lhs)) < std::get<0>(typename SOA_type::T(rhs)); } );
 
 	// move pointer to first elt at least start
 	size_t log_ptr = 0;
@@ -2246,11 +2270,11 @@ auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_range(ke
 			log_ptr++;
 
 		} else if (log_key < block_key) {
-			printf("\toutput[%lu] = %lu from log\n", output.size(), log_key);
+			// printf("\toutput[%lu] = %lu from log\n", output.size(), log_key);
 			output.push_back(blind_read_array(log_copy.data(), log_size, log_ptr));
 			log_ptr++;
 		} else {
-			printf("\toutput[%lu] = %lu from blocks\n", output.size(), block_key);
+			// printf("\toutput[%lu] = %lu from blocks\n", output.size(), block_key);
 			output.push_back(blind_read_array(block_copy.data(), block_size, block_ptr));
 			block_ptr++;
 			// if we ran out of block, copy in the next one
@@ -2289,13 +2313,13 @@ auto LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_range(ke
 	// cleanup with blocks
 
 	while(block_ptr < elts_in_block_copy && block_idx < num_blocks) {
-		printf("\toutput[%lu] = %lu from block\n", output.size(), blind_read_key_array(block_copy.data(), block_size, block_ptr));
+		// printf("\toutput[%lu] = %lu from block\n", output.size(), blind_read_key_array(block_copy.data(), block_size, block_ptr));
 		output.push_back(blind_read_array(block_copy.data(), block_size, block_ptr));
 		block_ptr++;
 		if (output.size() == length) { return output; }
 		// go to the next block if we reached the end of this one
 		if (block_ptr == elts_in_block_copy) {
-			printf("move forward to block %lu\n", block_idx);
+			// printf("move forward to block %lu\n", block_idx);
 			block_idx++;
 			if (block_idx == num_blocks) { break; }
 			ret = get_sorted_block_copy(block_idx);
@@ -2556,7 +2580,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::merge(LeafDS<lo
 // assumes manual_num_elts == true size of leafds
 // maxkey and secondmaxkey inits to 0
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
-void LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_max_2(key_type* max_key, key_type* second_max_key) {
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::get_max_2(key_type* max_key, key_type* second_max_key) const {
 	/*
 	// simple const implementation without knowing total number of elements
 
