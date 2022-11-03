@@ -294,7 +294,7 @@ public:
 
   // return the next [length] sorted elts greater than or equal to start
   template <class F>
-  uint64_t sorted_range(key_type start, size_t length, F f) const;
+  uint64_t sorted_range(key_type start, size_t length, F f) ;
 
   // return all elts in the range [start, end]
   template <class F>
@@ -2224,7 +2224,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::unsorted_range(
 // TODO: make this apply function f to everything in the range
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 template <class F>
-uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_range(key_type start, size_t length, F f) const {
+uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_range(key_type start, size_t length, F f) {
 #if DEBUG_PRINT
 	printf("\n\n*** sorted range starting at %lu of length %lu ***\n", start, length);
 #endif
@@ -2237,130 +2237,111 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 		return num_applied;
 	}
 
-	std::array<uint8_t, SOA_type::get_size_static(log_size)> log_copy = {0};
-	for(size_t i = 0; i < num_inserts_in_log; i++) {
-		// blind_write_array(log_copy.data(), log_size, blind_read(i), i);
-		SOA_type::get_static(log_copy.data(), log_size, i) = blind_read(i);
-	}
+	sort_range(0, num_inserts_in_log);
 
-	// sort_array_range(log_copy.data(), log_size, 0, num_inserts_in_log);
-	auto start_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(log_copy.data(), log_size, 0);
-	auto end_sort = typename LeafDS<log_size, header_size, block_size, key_type, Ts...>::SOA_type::Iterator(log_copy.data(), log_size, num_inserts_in_log);
-	std::sort(start_sort, end_sort, [](auto lhs, auto rhs) { return std::get<0>(typename SOA_type::T(lhs)) < std::get<0>(typename SOA_type::T(rhs)); } );
-
-	// move pointer to first elt at least start
 	size_t log_ptr = 0;
-	while(log_ptr < num_inserts_in_log && blind_read_key_array(log_copy.data(), log_size, log_ptr) < start) {
-#if DEBUG_PRINT
-		printf("moving log ptr, log[%lu] = %lu\n", log_ptr, blind_read_key_array(log_copy.data(), log_size, log_ptr));
-#endif
+	while(log_ptr < num_inserts_in_log && blind_read_key(log_ptr) < start) {
 		log_ptr++;
 	}
 
-	// make a copy of the block that the start key is in
+	// find and sort current block
 	size_t block_idx = find_block(start);
-	auto ret = get_sorted_block_copy(block_idx);
-	std::array<uint8_t, SOA_type::get_size_static(block_size)> block_copy = ret.first;
-	size_t elts_in_block_copy = ret.second;
+	size_t elts_in_block_copy = count_block(block_idx);
+	sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
 
-	size_t block_ptr = 0;
-	while(block_ptr < elts_in_block_copy && blind_read_key_array(block_copy.data(), block_size, block_ptr) < start) {
-		block_ptr++;
+	// start block_ptr at header of current block
+	size_t block_ptr = header_start + block_idx;
+
+	// move block ptr to location of >= start key
+	while(blind_read_key(block_ptr) < start && block_idx < num_blocks) {
+		if (block_ptr < blocks_start && elts_in_block_copy > 0) {
+			// in header, need to switch to block
+			block_ptr = blocks_start + block_idx * block_size;
+		} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
+			// at end of current block, need to switch to next block header
+			block_idx++;
+			elts_in_block_copy = count_block(block_idx);
+			sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+			block_ptr = header_start + block_idx;
+		} else {
+			// in block
+			block_ptr++;
+		}
 	}
 
-	// actually we should have been in the next one, key falls between end of block i and start of i+1
-	if (block_ptr == elts_in_block_copy && block_idx < num_blocks) {
-		block_idx++;
-		ret = get_sorted_block_copy(block_idx);
-		block_copy = ret.first;
-		elts_in_block_copy = ret.second;
-		block_ptr = 0;
-	}
-	// merge
-	while(log_ptr < num_inserts_in_log && block_ptr < elts_in_block_copy) {
-		key_type log_key = blind_read_key_array(log_copy.data(), log_size, log_ptr);
-		key_type block_key = blind_read_key_array(block_copy.data(), block_size, block_ptr);
+	while(log_ptr < num_inserts_in_log && block_idx < num_blocks) {
+		key_type log_key = blind_read_key(log_ptr);
+		key_type block_key = blind_read_key(block_ptr);
 		assert(num_applied < length);
 		assert(log_key >= start);
 		assert(block_key >= start);
 		if (log_key == block_key) { // duplicate in log and blocks
 			// log is the more recent one
-			// output.push_back(blind_read_array(log_copy.data(), log_size, log_ptr));
-			std::apply(f, blind_read_array(log_copy.data(), log_size, log_ptr));
+			std::apply(f, blind_read(log_ptr));
 			log_ptr++;
 			num_applied++;
 
 		} else if (log_key < block_key) {
 			// printf("\toutput[%lu] = %lu from log\n", output.size(), log_key);
-			// output.push_back(blind_read_array(log_copy.data(), log_size, log_ptr));
-			std::apply(f, blind_read_array(log_copy.data(), log_size, log_ptr));
+			std::apply(f, blind_read(log_ptr));
 			log_ptr++;
 			num_applied++;
 		} else {
 			// printf("\toutput[%lu] = %lu from blocks\n", output.size(), block_key);
-			// output.push_back(blind_read_array(block_copy.data(), block_size, block_ptr));
-			std::apply(f, blind_read_array(block_copy.data(), block_size, block_ptr));
-			block_ptr++;
-			num_applied++;
-			// if we ran out of block, copy in the next one
-			if (block_ptr == elts_in_block_copy) {
+			std::apply(f, blind_read(block_ptr));
+
+			if (block_ptr < blocks_start && elts_in_block_copy > 0) {
+				// in header, need to switch to block
+				block_ptr = blocks_start + block_idx * block_size;
+			} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
+				// at end of current block, need to switch to next block header
 				block_idx++;
-				if (block_idx == num_blocks) { break; }
-				ret = get_sorted_block_copy(block_idx);
-				block_copy = ret.first;
-				elts_in_block_copy = ret.second;
-				block_ptr = 0;
-#if DEBUG
-				for(size_t i = 0; i < elts_in_block_copy; i++) {
-					ASSERT(blind_read_key_array(block_copy.data(), block_size, i) > start, "block_copy[%lu] = %lu, start = %lu\n", i, blind_read_key_array(block_copy.data(), block_size, i), start);
-				}
-#endif
+				elts_in_block_copy = count_block(block_idx);
+				sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+				block_ptr = header_start + block_idx;
+			} else {
+				// in block
+				block_ptr++;
 			}
+			num_applied++;
 		}
 		if (num_applied == length) { return num_applied; }
 	}
+
 	assert(num_applied < length);
+
 	// cleanup with log
 	while(log_ptr < num_inserts_in_log) {
-#if DEBUG
-		key_type log_key = blind_read_key_array(log_copy.data(), log_size, log_ptr);
-#if DEBUG_PRINT
-		printf("\toutput[%lu] = %lu from log\n", num_applied, log_key);
-#endif
-		assert(num_applied < length);
-		assert(log_key >= start);
-#endif
-		// output.push_back(blind_read_array(log_copy.data(), log_size, log_ptr));
-		std::apply(f, blind_read_array(log_copy.data(), log_size, log_ptr));
+		std::apply(f, blind_read(log_ptr));
 		log_ptr++;
 		num_applied++;
 		if (num_applied == length) { return num_applied; }
 	}
-	assert(num_applied < length);
-	// cleanup with blocks
 
-	while(block_ptr < elts_in_block_copy && block_idx < num_blocks) {
+	assert(num_applied < length);
+
+	// cleanup with blocks
+	while(block_idx < num_blocks) {
 		// printf("\toutput[%lu] = %lu from block\n", output.size(), blind_read_key_array(block_copy.data(), block_size, block_ptr));
 		// output.push_back(blind_read_array(block_copy.data(), block_size, block_ptr));
-		std::apply(f, blind_read_array(block_copy.data(), block_size, block_ptr));
-		block_ptr++;
-		num_applied++;
-		if (num_applied == length) { return num_applied; }
-		// go to the next block if we reached the end of this one
-		if (block_ptr == elts_in_block_copy) {
-			// printf("move forward to block %lu\n", block_idx);
+		std::apply(f, blind_read(block_ptr));
+
+		if (block_ptr < blocks_start && elts_in_block_copy > 0) {
+			// in header, need to switch to block
+			block_ptr = blocks_start + block_idx * block_size;
+		} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
+			// at end of current block, need to switch to next block header
 			block_idx++;
-			if (block_idx == num_blocks) { break; }
-			ret = get_sorted_block_copy(block_idx);
-			block_copy = ret.first;
-			elts_in_block_copy = ret.second;
-#if DEBUG
-				for(size_t i = 0; i < elts_in_block_copy; i++) {
-					assert(blind_read_key_array(block_copy.data(), block_size, i) > start);
-				}
-#endif
-				block_ptr = 0;
+			elts_in_block_copy = count_block(block_idx);
+			sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+			block_ptr = header_start + block_idx;
+		} else {
+			// in block
+			block_ptr++;
 		}
+		num_applied++;
+
+		if (num_applied == length) { return num_applied; }
 	}
 
 	return num_applied;
