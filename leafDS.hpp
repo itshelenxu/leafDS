@@ -164,6 +164,9 @@ private:
 	static constexpr size_t max_density = (int)( 9.0 / 10.0 * N );
 	static constexpr size_t min_density = (int)( 4.0 / 10.0 * N );
 
+	// block sorted bitmap (works with num_blocks up to 64)
+	uint64_t block_sorted_bitmap = 0;
+
 public:
 	// TODO: NOT SAFE!! insert and delete break this because they don't increment num_elts_total until they flush
 	// size_t get_num_elements() const { return num_elts_total; }
@@ -1028,6 +1031,8 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 				log_to_flush[num_to_flush] = blind_read(i);
 				num_to_flush++;
 				num_to_flush_per_block[block_idx]++;
+				// set's block_idx's bit to 0
+				block_sorted_bitmap = block_sorted_bitmap & ~(one[block_idx]);
 			} else {
 				num_elts_total--;
 #if DEBUG_PRINT
@@ -1061,6 +1066,8 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 	if (need_global_redistrubute) {
 		assert(num_deletes_in_log == 0);
 		global_redistribute(log_to_flush, num_to_flush, count_per_block);
+		// blocks are sorted after global redist
+		block_sorted_bitmap = ~(0ULL);
 		return; // log gets taken care of in global redistribute
 	}
 
@@ -1071,6 +1078,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::flush_log_to_bl
 		size_t write_start = blocks_start + i * block_size + count_per_block[i];
 		for(size_t j = 0; j < num_to_flush_per_block[i]; j++) {
 			blind_write(log_to_flush[idx_in_log + j], write_start + j);
+			block_sorted_bitmap = block_sorted_bitmap & ~(one[i]);
 		}
 		idx_in_log += num_to_flush_per_block[i];
 	}
@@ -1212,6 +1220,9 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 
 				// make min elt the new first header
 				copy_src_to_dest(0, header_start);
+
+				// this block is no longer sorted
+				block_sorted_bitmap = block_sorted_bitmap & ~(one[0]);
 				num_elts_total++;
 			}
 
@@ -2247,7 +2258,22 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 	// find and sort current block
 	size_t block_idx = find_block(start);
 	size_t elts_in_block_copy = count_block(block_idx);
-	sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+
+	if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+		// if bitmap says its sorted, make sure
+		for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+			if (blind_read_key(i-1) >= blind_read_key(i)) {
+				print();
+			}
+			ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu \n bitmap = %lu , blockidx = %lu \n\n", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log, block_sorted_bitmap, block_idx);
+			
+		}
+#endif
+	} else {
+		sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+		block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+	}
 
 	// start block_ptr at header of current block
 	size_t block_ptr = header_start + block_idx;
@@ -2261,7 +2287,18 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 			// at end of current block, need to switch to next block header
 			block_idx++;
 			elts_in_block_copy = count_block(block_idx);
-			sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+
+			if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+				// if bitmap says its sorted, make sure
+				for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+					ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
+				}
+#endif
+			} else {
+				sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+				block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+			}
 			block_ptr = header_start + block_idx;
 		} else {
 			// in block
@@ -2297,7 +2334,17 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 				// at end of current block, need to switch to next block header
 				block_idx++;
 				elts_in_block_copy = count_block(block_idx);
-				sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+				if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+					// if bitmap says its sorted, make sure
+					for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+						ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
+					}
+#endif
+				} else {
+					sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+					block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+				}
 				block_ptr = header_start + block_idx;
 			} else {
 				// in block
@@ -2333,7 +2380,17 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 			// at end of current block, need to switch to next block header
 			block_idx++;
 			elts_in_block_copy = count_block(block_idx);
-			sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+			if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+				// if bitmap says its sorted, make sure
+				for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+					ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
+				}
+#endif
+			} else {
+				sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+				block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+			}
 			block_ptr = header_start + block_idx;
 		} else {
 			// in block
