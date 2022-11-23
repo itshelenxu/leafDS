@@ -3,6 +3,7 @@
 #pragma once
 #include "StructOfArrays/SizedInt.hpp"
 #include "StructOfArrays/soa.hpp"
+#include "StructOfArrays/aos.hpp"
 #include "helpers.hpp"
 #include <algorithm>
 #include <array>
@@ -34,7 +35,7 @@
 
 #define STATS 0
 #define DEBUG_PRINT 0
-#define ASK_ABOUT 1
+#define ASK_ABOUT 0
 #define AVX512_BROKEN 0
 #define INSERT_UPDATE 0
 
@@ -69,8 +70,10 @@ class LeafDS {
   using NthType = typename std::tuple_element<I, value_type>::type;
   static constexpr int num_types = sizeof...(Ts);
 
-  using SOA_type = typename std::conditional<binary, SOA<key_type>,
-                                             SOA<key_type, Ts...>>::type;
+//   using SOA_type = typename std::conditional<binary, SOA<key_type>,
+//                                              SOA<key_type, Ts...>>::type;
+  using SOA_type = typename std::conditional<binary, AOS<key_type>,
+                                            AOS<key_type, Ts...>>::type;
 
 #if AVX512
 	static constexpr size_t keys_per_vector = 64 / sizeof(key_type);
@@ -717,6 +720,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_range(size
 
 	std::sort(start, end, [](auto lhs, auto rhs) { return std::get<0>(typename SOA_type::T(lhs)) < std::get<0>(typename SOA_type::T(rhs)); } );
 // #if ASK_ABOUT
+#if DEBUG
 	// check sortedness
 	for(size_t i = start_idx + 1; i < end_idx; i++) {
 		if (blind_read_key(i-1) >= blind_read_key(i)) {
@@ -726,6 +730,7 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::sort_range(size
 		assert(blind_read_key(i-1) < blind_read_key(i));
 
 	}
+#endif
 // #endif
 }
 
@@ -2286,6 +2291,8 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 		} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
 			// at end of current block, need to switch to next block header
 			block_idx++;
+			if (block_idx == num_blocks) { break; }
+
 			elts_in_block_copy = count_block(block_idx);
 
 			if ((block_sorted_bitmap & one[block_idx])) {
@@ -2309,6 +2316,7 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 	while(log_ptr < num_inserts_in_log && block_idx < num_blocks) {
 		key_type log_key = blind_read_key(log_ptr);
 		key_type block_key = blind_read_key(block_ptr);
+		// printf("num applied = %lu, log_key = %lu, block_key = %lu, length = %lu\n", num_applied, log_key, block_key, length);
 		assert(num_applied < length);
 		assert(log_key >= start);
 		assert(block_key >= start);
@@ -2318,13 +2326,37 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 			log_ptr++;
 			num_applied++;
 
+			// increment block pointer too
+			if (block_ptr < blocks_start && elts_in_block_copy > 0) {
+				// in header, need to switch to block
+				block_ptr = blocks_start + block_idx * block_size;
+			} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
+				// at end of current block, need to switch to next block header
+				block_idx++;
+				if (block_idx == num_blocks) { break; }
+				elts_in_block_copy = count_block(block_idx);
+				if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+					// if bitmap says its sorted, make sure
+					for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+						ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
+					}
+#endif
+				} else {
+					sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+					block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+				}
+				block_ptr = header_start + block_idx;
+			} else {
+				// in block
+				block_ptr++;
+			}
+
 		} else if (log_key < block_key) {
-			// printf("\toutput[%lu] = %lu from log\n", output.size(), log_key);
 			std::apply(f, blind_read(log_ptr));
 			log_ptr++;
 			num_applied++;
 		} else {
-			// printf("\toutput[%lu] = %lu from blocks\n", output.size(), block_key);
 			std::apply(f, blind_read(block_ptr));
 
 			if (block_ptr < blocks_start && elts_in_block_copy > 0) {
@@ -2333,6 +2365,7 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 			} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
 				// at end of current block, need to switch to next block header
 				block_idx++;
+				if (block_idx == num_blocks) { break; }
 				elts_in_block_copy = count_block(block_idx);
 				if ((block_sorted_bitmap & one[block_idx])) {
 #if DEBUG
@@ -2352,18 +2385,24 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 			}
 			num_applied++;
 		}
+
 		if (num_applied == length) { return num_applied; }
 	}
+
+	if (num_applied == length) { return num_applied; }
 
 	assert(num_applied < length);
 
 	// cleanup with log
 	while(log_ptr < num_inserts_in_log) {
+		// printf("in log cleanup num applied = %lu, log_key = %lu, length = %lu\n", num_applied, blind_read_key(log_ptr), length);
 		std::apply(f, blind_read(log_ptr));
 		log_ptr++;
 		num_applied++;
 		if (num_applied == length) { return num_applied; }
 	}
+
+	if (num_applied == length) { return num_applied; }
 
 	assert(num_applied < length);
 
@@ -2372,6 +2411,7 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 		// printf("\toutput[%lu] = %lu from block\n", output.size(), blind_read_key_array(block_copy.data(), block_size, block_ptr));
 		// output.push_back(blind_read_array(block_copy.data(), block_size, block_ptr));
 		std::apply(f, blind_read(block_ptr));
+		num_applied++;
 
 		if (block_ptr < blocks_start && elts_in_block_copy > 0) {
 			// in header, need to switch to block
@@ -2379,10 +2419,12 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 		} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
 			// at end of current block, need to switch to next block header
 			block_idx++;
+			if (block_idx == num_blocks) { break; }
 			elts_in_block_copy = count_block(block_idx);
 			if ((block_sorted_bitmap & one[block_idx])) {
 #if DEBUG
 				// if bitmap says its sorted, make sure
+				assert(elts_in_block_copy < block_size);
 				for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
 					ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
 				}
@@ -2396,7 +2438,6 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 			// in block
 			block_ptr++;
 		}
-		num_applied++;
 
 		if (num_applied == length) { return num_applied; }
 	}
