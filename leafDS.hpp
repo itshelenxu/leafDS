@@ -411,7 +411,6 @@ public:
 		iterator()
 			: curr_val_ptr(0)
 		{ 
-			printf("bad iteration construction\n");
 		}
 
 		iterator(size_t val, LeafDS<log_size, header_size, block_size, key_type, Ts...>* leafds)
