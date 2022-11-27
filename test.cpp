@@ -597,37 +597,37 @@ static long get_usecs() {
       lengths.push_back(dist_len(rng_query));
     }
 
-    cilk_for(uint32_t i = 0; i < num_copies; i++) {
-      for(uint32_t j = 0; j < num_queries; j++) {
-        // do the correct version in sorted vector
-        size_t idx = 0;
-        while(idx < vectors[i].size() && vectors[i][idx] < starts[j]) {
-          idx++;
-        }
-        std::vector<key_type> correct_range;
-        while(correct_range.size() < lengths[j] && idx < vectors[i].size()) {
-                assert(vectors[i][idx] >= starts[j]);
-                correct_range.push_back(vectors[i][idx]);
-                idx++;
-        }
-        auto test_range = dsv[i].sorted_range(starts[j], lengths[j]);
-        if (test_range.size() != correct_range.size()) {
-          printf("\n");
-          for(size_t k = 0; k < test_range.size(); k++) {
-            printf("test_output[%lu] = %lu\n", k, std::get<0>(test_range[k]));
-          }
-          for(size_t k = 0; k < correct_range.size(); k++) {
-            printf("correct_output[%lu] = %lu\n", k, correct_range[k]);
-          }
+    // cilk_for(uint32_t i = 0; i < num_copies; i++) {
+    //   for(uint32_t j = 0; j < num_queries; j++) {
+    //     // do the correct version in sorted vector
+    //     size_t idx = 0;
+    //     while(idx < vectors[i].size() && vectors[i][idx] < starts[j]) {
+    //       idx++;
+    //     }
+    //     std::vector<key_type> correct_range;
+    //     while(correct_range.size() < lengths[j] && idx < vectors[i].size()) {
+    //             assert(vectors[i][idx] >= starts[j]);
+    //             correct_range.push_back(vectors[i][idx]);
+    //             idx++;
+    //     }
+    //     auto test_range = dsv[i].sorted_range(starts[j], lengths[j]);
+    //     if (test_range.size() != correct_range.size()) {
+    //       printf("\n");
+    //       for(size_t k = 0; k < test_range.size(); k++) {
+    //         printf("test_output[%lu] = %lu\n", k, std::get<0>(test_range[k]));
+    //       }
+    //       for(size_t k = 0; k < correct_range.size(); k++) {
+    //         printf("correct_output[%lu] = %lu\n", k, correct_range[k]);
+    //       }
 
-          dsv[i].print();
-          assert(test_range.size() == correct_range.size());
-        }
-        for(uint32_t k = 0; k < test_range.size(); k++) {
-          assert(std::get<0>(test_range[k]) == correct_range[k]);
-        } 
-      }
-    }
+    //       dsv[i].print();
+    //       assert(test_range.size() == correct_range.size());
+    //     }
+    //     for(uint32_t k = 0; k < test_range.size(); k++) {
+    //       assert(std::get<0>(test_range[k]) == correct_range[k]);
+    //     } 
+    //   }
+    // }
   }
 
   return 0;
@@ -707,24 +707,24 @@ static long get_usecs() {
                 idx++;
         }
 
-        auto test_range = dsv[copy].unsorted_range(start, end);
+        // auto test_range = dsv[copy].unsorted_range(start, end);
 
-	      // printf("\tcorrect got %lu elts, test got %lu elts\n", correct_range.size(), test_range.size());
+	      // // printf("\tcorrect got %lu elts, test got %lu elts\n", correct_range.size(), test_range.size());
 
-	      assert(test_range.size() == correct_range.size());
-	      std::sort(test_range.begin(), test_range.end());
-	      size_t i = 0;
-	      for(i = 0; i < correct_range.size(); i++) {
-		      if (std::get<0>(test_range[i]) != correct_range[i]) {
-			      dsv[0].print();
-		      }
-		      tbassert(std::get<0>(test_range[i]) == correct_range[i], "test[%lu] = %lu, correct[%lu] = %lu\n", i, std::get<0>(test_range[i]), i, correct_range[i]);
-		      // printf("test[%lu] = %lu, correct[%lu] = %lu\n", i, std::get<0>(test_range[i]), i, correct_range[i]);
-	      }
-	      while(i < test_range.size()) {
-		      // printf("remaining test[%lu] = %u\n", i, std::get<0>(test_range[i]));
-		      i++;
-	      }
+	      // assert(test_range.size() == correct_range.size());
+	      // std::sort(test_range.begin(), test_range.end());
+	      // size_t i = 0;
+	      // for(i = 0; i < correct_range.size(); i++) {
+		    //   if (std::get<0>(test_range[i]) != correct_range[i]) {
+			  //     dsv[0].print();
+		    //   }
+		    //   tbassert(std::get<0>(test_range[i]) == correct_range[i], "test[%lu] = %lu, correct[%lu] = %lu\n", i, std::get<0>(test_range[i]), i, correct_range[i]);
+		    //   // printf("test[%lu] = %lu, correct[%lu] = %lu\n", i, std::get<0>(test_range[i]), i, correct_range[i]);
+	      // }
+	      // while(i < test_range.size()) {
+		    //   // printf("remaining test[%lu] = %u\n", i, std::get<0>(test_range[i]));
+		    //   i++;
+	      // }
       }
     }
   }
@@ -858,23 +858,23 @@ static long get_usecs() {
       }
       printf("idx end = %lu\n", idx);
       
-      auto test_range = ds.sorted_range(starts[j], lengths[j]);
-      if (test_range.size() != correct_range.size()) {
-	printf("query %u, start = %lu, length = %lu\n", j, starts[j], lengths[j]);
-	printf("\n");
-	for(size_t k = 0; k < test_range.size(); k++) {
-	  printf("test_output[%lu] = %lu\n", k, std::get<0>(test_range[k]));
-	}
-	for(size_t k = 0; k < correct_range.size(); k++) {
-	  printf("correct_output[%lu] = %lu\n", k, correct_range[k]);
-	}
-	printf("\n");
-	ds.print();
-	assert(test_range.size() == correct_range.size());
-      }
-      for(uint32_t k = 0; k < test_range.size(); k++) {
-	assert(std::get<0>(test_range[k]) == correct_range[k]);
-      }
+      // auto test_range = ds.sorted_range(starts[j], lengths[j]);
+      // if (test_range.size() != correct_range.size()) {
+      //   printf("query %u, start = %lu, length = %lu\n", j, starts[j], lengths[j]);
+      //   printf("\n");
+      //   for(size_t k = 0; k < test_range.size(); k++) {
+      //     printf("test_output[%lu] = %lu\n", k, std::get<0>(test_range[k]));
+      //   }
+      //   for(size_t k = 0; k < correct_range.size(); k++) {
+      //     printf("correct_output[%lu] = %lu\n", k, correct_range[k]);
+      //   }
+      //   printf("\n");
+      //   ds.print();
+      //   assert(test_range.size() == correct_range.size());
+      // }
+      // for(uint32_t k = 0; k < test_range.size(); k++) {
+      //   assert(std::get<0>(test_range[k]) == correct_range[k]);
+      // }
     }	
   }
 
@@ -1915,6 +1915,73 @@ static long get_usecs() {
   return 0;
 }
 
+[[nodiscard]] int iterator_test_templated(uint32_t el_count) {
+  LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds;
+  std::mt19937 rng(0);
+  std::uniform_int_distribution<key_type> dist_el(1, N * 16);
+
+  std::vector<key_type> checker;
+  checker.reserve(el_count);
+  std::vector<key_type> elts_sorted;
+
+  // add some elements
+  for (uint32_t i = 0; i < el_count; i++) {
+    key_type el = dist_el(rng);
+    ds.insert(el);
+    if (!std::count(elts_sorted.begin(), elts_sorted.end(), el)) {
+      elts_sorted.push_back(el);
+    }
+
+    if (!ds.has(el)) {
+      ds.print();
+      printf("don't have something, %lu, we inserted while inserting "
+             "elements\n",
+             el);
+      return -1;
+    }
+  }
+  std::sort(elts_sorted.begin(), elts_sorted.end());
+  auto it_correct = elts_sorted.begin();
+  auto it_leafds = ds.begin();
+  int count = 0;
+
+  while (it_correct != elts_sorted.end() && it_leafds != ds.end()) {
+    // printf("correct: %lu, and %lu on count %lu ", correct_key, leafds_key, count);
+    key_type correct_key = *it_correct;
+    key_type leafds_key = it_leafds.key();
+    // auto leafds_key_deref = *it_leafds;
+    if (correct_key != leafds_key) {
+      printf("wrong iterator value, expected %lu but got %lu on count = %lu, iter = %lu\n", correct_key, leafds_key, count, it_leafds);
+      ds.print();
+      return -1;
+    }
+    
+    // printf("iter = %lu\n", it_leafds);
+    ++it_correct;
+    ++it_leafds;
+    count++;
+  }
+  if (it_correct != elts_sorted.end()) {
+    printf("leafds iterator counted too few elts\n");
+    return -1;
+  }
+  if (it_leafds != ds.end()) {
+    printf("leafds iterator counted too many elts\n");
+    return -1;
+  } 
+  return 0;
+}
+
+[[nodiscard]] int iterator_test(uint32_t el_count) {
+  int r = 0;
+  r = iterator_test_templated(el_count);
+  if (r) {
+    return r;
+  }
+
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
 
   cxxopts::Options options("LeafDStester",
@@ -1938,7 +2005,8 @@ int main(int argc, char *argv[]) {
     ("merge_test", "verify correctness")
     ("shift_left_test", "verify correctness")
     ("shift_right_test", "verify correctness")
-    ("max_2_test", "verify correctness");
+    ("max_2_test", "verify correctness")
+    ("iterator_test", "verify correctness");
     // ("help","Print help");
   // clang-format on
 
@@ -1995,6 +2063,10 @@ int main(int argc, char *argv[]) {
 
   if (result["max_2_test"].as<bool>()) {
     return max_2_test(el_count);
+  }
+
+  if (result["iterator_test"].as<bool>()) {
+    return iterator_test(el_count);
   }
 
   return 0;
