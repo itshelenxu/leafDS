@@ -301,6 +301,9 @@ public:
   // return the next [length] sorted elts greater than or equal to start
   template <class F>
   uint64_t sorted_range(key_type start, size_t length, F f) ;
+  // return sorted elts in the range [start, end] 
+  template <class F>
+  uint64_t sorted_range_end(key_type start, key_type end, F f) ;
 
   // return all elts in the range [start, end]
   template <class F>
@@ -2802,6 +2805,221 @@ uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_rang
 		}
 
 		if (num_applied == length) { return num_applied; }
+	}
+
+	return num_applied;
+}
+
+// return a vector of element type
+// TODO: make this apply function f to everything in the range
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+template <class F>
+uint64_t LeafDS<log_size, header_size, block_size, key_type, Ts...>::sorted_range_end(key_type start, key_type end, F f) {
+#if DEBUG_PRINT
+	printf("\n\n*** sorted range starting at %lu ending at %lu ***\n", start, end);
+#endif
+	// printf("start = %lu, length = %lu\n", start, length);
+	// copy log out-of-place and sort it
+	// std::vector<element_type> output;
+	uint64_t num_applied = 0;
+
+	if (start == end) {
+		return num_applied;
+	}
+
+	sort_range(0, num_inserts_in_log);
+
+	size_t log_ptr = 0;
+	while(log_ptr < num_inserts_in_log && blind_read_key(log_ptr) < start) {
+		log_ptr++;
+	}
+
+	// find and sort current block
+	size_t block_idx = find_block(start);
+	size_t elts_in_block_copy = count_block(block_idx);
+
+	if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+		// if bitmap says its sorted, make sure
+		for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+			if (blind_read_key(i-1) >= blind_read_key(i)) {
+				print();
+			}
+			ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu \n bitmap = %lu , blockidx = %lu \n\n", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log, block_sorted_bitmap, block_idx);
+			
+		}
+#endif
+	} else {
+		sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+		block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+	}
+
+	// start block_ptr at header of current block
+	size_t block_ptr = header_start + block_idx;
+
+	// move block ptr to location of >= start key
+	while(blind_read_key(block_ptr) < start && block_idx < num_blocks) {
+		if (block_ptr < blocks_start && elts_in_block_copy > 0) {
+			// in header, need to switch to block
+			block_ptr = blocks_start + block_idx * block_size;
+		} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
+			// at end of current block, need to switch to next block header
+			block_idx++;
+			if (block_idx == num_blocks) { break; }
+
+			elts_in_block_copy = count_block(block_idx);
+
+			if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+				// if bitmap says its sorted, make sure
+				for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+					ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
+				}
+#endif
+			} else {
+				sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+				block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+			}
+			block_ptr = header_start + block_idx;
+		} else {
+			// in block
+			block_ptr++;
+		}
+	}
+
+	while(log_ptr < num_inserts_in_log && block_idx < num_blocks) {
+		key_type log_key = blind_read_key(log_ptr);
+		key_type block_key = blind_read_key(block_ptr);
+		if (log_key >= end && block_key >= end) {
+			return num_applied;
+		} else if (log_key >= end ) {
+			log_ptr = num_inserts_in_log;
+			break;
+		} else if (block_key >= end) {
+			block_idx = num_blocks;
+			break;
+		}
+		// printf("num applied = %lu, log_key = %lu, block_key = %lu, length = %lu\n", num_applied, log_key, block_key, length);
+		assert(num_applied < length);
+		assert(log_key >= start);
+		assert(block_key >= start);
+		if (log_key == block_key) { // duplicate in log and blocks
+			// log is the more recent one
+			std::apply(f, blind_read(log_ptr));
+			log_ptr++;
+			num_applied++;
+
+			// increment block pointer too
+			if (block_ptr < blocks_start && elts_in_block_copy > 0) {
+				// in header, need to switch to block
+				block_ptr = blocks_start + block_idx * block_size;
+			} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
+				// at end of current block, need to switch to next block header
+				block_idx++;
+				if (block_idx == num_blocks) { break; }
+				elts_in_block_copy = count_block(block_idx);
+				if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+					// if bitmap says its sorted, make sure
+					for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+						ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
+					}
+#endif
+				} else {
+					sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+					block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+				}
+				block_ptr = header_start + block_idx;
+			} else {
+				// in block
+				block_ptr++;
+			}
+
+		} else if (log_key < block_key) {
+			std::apply(f, blind_read(log_ptr));
+			log_ptr++;
+			num_applied++;
+		} else {
+			std::apply(f, blind_read(block_ptr));
+
+			if (block_ptr < blocks_start && elts_in_block_copy > 0) {
+				// in header, need to switch to block
+				block_ptr = blocks_start + block_idx * block_size;
+			} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
+				// at end of current block, need to switch to next block header
+				block_idx++;
+				if (block_idx == num_blocks) { break; }
+				elts_in_block_copy = count_block(block_idx);
+				if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+					// if bitmap says its sorted, make sure
+					for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+						ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
+					}
+#endif
+				} else {
+					sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+					block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+				}
+				block_ptr = header_start + block_idx;
+			} else {
+				// in block
+				block_ptr++;
+			}
+			num_applied++;
+		}
+	}
+	assert(num_applied < length);
+
+	// cleanup with log
+	while(log_ptr < num_inserts_in_log) {
+		// printf("in log cleanup num applied = %lu, log_key = %lu, length = %lu\n", num_applied, blind_read_key(log_ptr), length);
+		if (blind_read_key(log_ptr) >= end) {
+			break;
+		}
+		std::apply(f, blind_read(log_ptr));
+		log_ptr++;
+		num_applied++;
+	}
+
+	assert(num_applied < length);
+
+	// cleanup with blocks
+	while(block_idx < num_blocks) {
+		if (blind_read_key(block_ptr) >= end) {
+			break;
+		}
+		// printf("\toutput[%lu] = %lu from block\n", output.size(), blind_read_key_array(block_copy.data(), block_size, block_ptr));
+		// output.push_back(blind_read_array(block_copy.data(), block_size, block_ptr));
+		std::apply(f, blind_read(block_ptr));
+		num_applied++;
+
+		if (block_ptr < blocks_start && elts_in_block_copy > 0) {
+
+			// in header, need to switch to block
+			block_ptr = blocks_start + block_idx * block_size;
+		} else if (elts_in_block_copy == 0 || block_ptr == blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
+			// at end of current block, need to switch to next block header
+			block_idx++;
+			if (block_idx == num_blocks) { break; }
+			elts_in_block_copy = count_block(block_idx);
+			if ((block_sorted_bitmap & one[block_idx])) {
+#if DEBUG
+				// if bitmap says its sorted, make sure
+				assert(elts_in_block_copy < block_size);
+				for(size_t i = blocks_start + block_idx * block_size + 1; i < blocks_start + block_idx * block_size + elts_in_block_copy; i++) {
+					ASSERT(blind_read_key(i-1) < blind_read_key(i), "i: %lu, key at i - 1: %lu, key at i: %lu, num_dels: %lu", i, blind_read_key(i-1), blind_read_key(i), num_deletes_in_log);
+				}
+#endif
+			} else {
+				sort_range(blocks_start + block_idx * block_size, blocks_start + block_idx * block_size + elts_in_block_copy);
+				block_sorted_bitmap = block_sorted_bitmap | one[block_idx];
+			}
+			block_ptr = header_start + block_idx;
+		} else {
+			// in block
+			block_ptr++;
+		}
 	}
 
 	return num_applied;
