@@ -281,6 +281,10 @@ public:
   // insert e, return true if it was not there
   bool insert(element_type e);
 
+  // bulk loads into assumed empty leafds, will overwrite existing elts
+  template <typename Iterator>
+  void bulk_load(Iterator it, Iterator ibegin, size_t num_items, key_type* max_key);
+
   // remove e, return true if it was present
   bool remove(key_type e);
 
@@ -1641,6 +1645,47 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 	}
 
 	return true;
+}
+
+// bulk loads into assumed empty leafds, will overwrite existing elts
+// assumes no duplicates
+// returns max key
+template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
+template <typename Iterator>
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::bulk_load(Iterator it, Iterator ibegin, size_t num_items, key_type* max_key) {
+	assert(num_items < header_size + header_size * block_size);
+	
+	clear_range(0, N); // clear the leaf
+
+	// split up the buffer into blocks
+	size_t per_block = num_items / num_blocks;
+	size_t remainder = num_items % num_blocks;
+	size_t num_so_far = 0;
+	printf("\tPer block %lu, remainder %lu\n", per_block, remainder);
+	for(size_t i = 0; i < num_blocks; i++) {
+		size_t num_to_flush = per_block + (i < remainder);
+
+		// write the header
+		blind_write(*it, header_start + i);
+		*max_key = blind_read_key(header_start + i);
+		printf("\tWrote header block %lu, it =%lu, val = %lu\n", i, it - ibegin, std::get<0>(*it));
+		num_to_flush--;
+		num_so_far++;
+		++it;
+
+		// write the rest into block
+		size_t start = blocks_start + i * block_size;
+		for(size_t j = 0; j < num_to_flush; j++) {
+
+			blind_write(*it, start + j);
+			*max_key = blind_read_key(start + j);
+			num_so_far++;
+			++it;
+
+		}
+	}
+	assert(num_so_far == num_items);
+	return;
 }
 
 
