@@ -283,7 +283,7 @@ public:
 
   // bulk loads into assumed empty leafds, will overwrite existing elts
   template <typename Iterator>
-  void bulk_load(Iterator it, Iterator ibegin, size_t num_items, key_type* max_key);
+  void bulk_load(Iterator it, size_t num_items, key_type* max_key);
 
   // remove e, return true if it was present
   bool remove(key_type e);
@@ -1652,7 +1652,7 @@ bool LeafDS<log_size, header_size, block_size, key_type, Ts...>::insert(element_
 // returns max key
 template <size_t log_size, size_t header_size, size_t block_size, typename key_type, typename... Ts>
 template <typename Iterator>
-void LeafDS<log_size, header_size, block_size, key_type, Ts...>::bulk_load(Iterator it, Iterator ibegin, size_t num_items, key_type* max_key) {
+void LeafDS<log_size, header_size, block_size, key_type, Ts...>::bulk_load(Iterator it, size_t num_items, key_type* max_key) {
 	assert(num_items < header_size + header_size * block_size);
 	
 	clear_range(0, N); // clear the leaf
@@ -1661,14 +1661,14 @@ void LeafDS<log_size, header_size, block_size, key_type, Ts...>::bulk_load(Itera
 	size_t per_block = num_items / num_blocks;
 	size_t remainder = num_items % num_blocks;
 	size_t num_so_far = 0;
-	printf("\tPer block %lu, remainder %lu\n", per_block, remainder);
+	// printf("\tPer block %lu, remainder %lu\n", per_block, remainder);
 	for(size_t i = 0; i < num_blocks; i++) {
 		size_t num_to_flush = per_block + (i < remainder);
 
 		// write the header
 		blind_write(*it, header_start + i);
 		*max_key = blind_read_key(header_start + i);
-		printf("\tWrote header block %lu, it =%lu, val = %lu\n", i, it - ibegin, std::get<0>(*it));
+		// printf("\tWrote header block %lu, it =%lu, val = %lu\n", i, it - ibegin, std::get<0>(*it));
 		num_to_flush--;
 		num_so_far++;
 		++it;
