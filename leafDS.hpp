@@ -397,19 +397,12 @@ public:
 
 		//! Current key/data slot referenced
 		size_t curr_val_ptr;
-		size_t log_ptr, block_ptr;
-		size_t elts_in_block_copy;
-		// size_t block_size;
 		size_t block_idx;
 		bool log_only;
-		bool blocks_only;
-
-		bool using_log_ptr;
-		bool log_block_equal;
-		key_type log_key;
-		key_type block_key;
 
 		LeafDS<log_size, header_size, block_size, key_type, Ts...>* leaf;
+		unsigned short count_per_block[header_size];
+
 
 	public:
 		// *** Methods
@@ -421,48 +414,69 @@ public:
 		}
 
 		iterator(size_t val, LeafDS<log_size, header_size, block_size, key_type, Ts...>* leafds)
-			:  curr_val_ptr(val), log_ptr(0), block_ptr(leafds->header_start), log_only(false), blocks_only(false), leaf(leafds)
+			:  curr_val_ptr(val), log_only(false), block_idx(0), leaf(leafds)
 		{ 
 			// printf("end iter, %lu", )
 		}
 
 		iterator(LeafDS<log_size, header_size, block_size, key_type, Ts...>* leafds)
-			: curr_val_ptr(0), log_ptr(0), block_ptr(leafds->header_start), log_only(false), blocks_only(false), leaf(leafds)
+			: curr_val_ptr(0), log_only(false), block_idx(0), leaf(leafds)
 		{
-			leaf->sort_range(0, leaf->num_inserts_in_log);
-			log_key = leaf->blind_read_key(log_ptr);
-			block_key = leaf->blind_read_key(block_ptr);
-			block_idx = 0;
-			elts_in_block_copy = leaf->count_block(block_idx);
-			if ((leaf->block_sorted_bitmap & one[block_idx])) {
-			} else {
-				leaf->sort_range(leaf->blocks_start + block_idx * block_size, leaf->blocks_start + block_idx * block_size + elts_in_block_copy);
-				leaf->block_sorted_bitmap = leaf->block_sorted_bitmap | one[block_idx];
-			}
-			// block_size = block_size;
+			leaf->sort_range(0, leaf->num_inserts_in_log); // sort inserts
 
-			if (leaf->num_inserts_in_log == 0) {
-				curr_val_ptr = block_ptr;
-				blocks_only = true;
-				using_log_ptr = false;
-				log_block_equal = false;
-			} else if (block_key == 0) {
-				curr_val_ptr = log_ptr;
+			// if only log exists, just loop over log
+			if (leaf->get_min_block_key() == 0) {
 				log_only = true;
-				using_log_ptr = true;
-				log_block_equal = false;
-			} else if (log_key < block_key) {
-				curr_val_ptr = log_ptr;
-				using_log_ptr = true;
-				log_block_equal = false;
-			} else if (log_key == block_key) {
-				curr_val_ptr = log_ptr;
-				using_log_ptr = true;
-				log_block_equal = true;
-			} else {
-				curr_val_ptr = block_ptr;
-				using_log_ptr = false;
-				log_block_equal = false;
+				curr_val_ptr = 0;
+			} else { // otherwise, flush and only loop over blocks
+				if(leaf->num_deletes_in_log > 0) {
+					leaf->sort_range(log_size - leaf->num_deletes_in_log, log_size); // sort deletes
+					if (leaf->delete_from_header()) {
+						leaf->strip_deletes_and_redistrib();
+					} else {
+						leaf->flush_deletes_to_blocks();
+					}
+					leaf->num_deletes_in_log = 0;
+				}
+
+				// if inserting min, swap out the first header into the first block
+				if (leaf->num_inserts_in_log > 0 && leaf->blind_read_key(0) < leaf->get_min_block_key()) {
+					size_t j = leaf->blocks_start + block_size;
+					// find the first zero slot in the block
+					SOA_type::template map_range_with_index_static(leaf->array.data(), leaf->N, [&j](auto index, auto key, auto... values) {
+						if (key == 0) {
+							j = std::min(index, j);
+						}
+					}, leaf->blocks_start, leaf->blocks_start + block_size);
+
+					// put the old min header in the block where it belongs
+					// src = header start, dest = i
+					leaf->copy_src_to_dest(leaf->header_start, j);
+
+					// make min elt the new first header
+					leaf->copy_src_to_dest(0, leaf->header_start);
+
+					// this block is no longer sorted
+					leaf->block_sorted_bitmap = leaf->block_sorted_bitmap & ~(one[0]);
+				}
+
+				assert(leaf->num_deletes_in_log == 0);
+				leaf->flush_log_to_blocks(leaf->num_inserts_in_log);
+				leaf->num_inserts_in_log = 0;
+				leaf->clear_range(0, log_size);
+				curr_val_ptr = leaf->header_start;
+				log_only = false;
+				
+				// presort all blocks
+				for (size_t i = 0; i < num_blocks; i++) {
+					count_per_block[i] = leaf->count_block(i);
+					if ((leaf->block_sorted_bitmap & one[i])) {
+					} else {
+						auto block_range = leaf->get_block_range(i);
+						leaf->sort_range(block_range.first, block_range.first + count_per_block[i]);
+						leaf->block_sorted_bitmap = leaf->block_sorted_bitmap | one[i];
+					}
+				}
 			}
 		}
 
@@ -484,25 +498,21 @@ public:
 		//! Prefix++ advance the iterator to the next slot.
 		iterator& operator ++ () {
 			if (curr_val_ptr == leaf->N) { return *this;}
-			bool increment_log = false;
-			bool increment_block = false;
 
 			if (log_only) {
-				increment_log = true;
-				if (log_ptr + 1 < leaf->num_inserts_in_log) {
-					++log_ptr;
+				// printf("log inserts %lu, log only %d, curr val ptr \n", leaf->num_inserts_in_log, log_only, curr_val_ptr);
+				if (curr_val_ptr + 1 < leaf->num_inserts_in_log) {
+					++curr_val_ptr;
 				} else {
 					// this is end()
-					log_ptr = leaf->N;
+					curr_val_ptr = leaf->N;
 				}
-				curr_val_ptr = log_ptr;
-			} else if (blocks_only) {
-				increment_block = true;
+			} else {
 				// increment block pointer
-				if (block_ptr < leaf->blocks_start && elts_in_block_copy > 0) {
+				if (curr_val_ptr < leaf->blocks_start && count_per_block[block_idx] > 0) {
 					// in header, need to switch to block
-					block_ptr = leaf->blocks_start + block_idx * block_size;
-				} else if (elts_in_block_copy == 0 || block_ptr == leaf->blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
+					curr_val_ptr = leaf->blocks_start + block_idx * block_size;
+				} else if (count_per_block[block_idx] == 0 || curr_val_ptr == leaf->blocks_start + block_idx * block_size + count_per_block[block_idx] - 1) {
 					// at end of current block, need to switch to next block header
 					block_idx++;
 					if (block_idx == leaf->num_blocks) { 
@@ -510,90 +520,10 @@ public:
 						curr_val_ptr = leaf->N;
 						return *this; 
 					}
-					elts_in_block_copy = leaf->count_block(block_idx);
-					if ((leaf->block_sorted_bitmap & one[block_idx])) {
-					} else {
-						leaf->sort_range(leaf->blocks_start + block_idx * block_size, leaf->blocks_start + block_idx * block_size + elts_in_block_copy);
-						leaf->block_sorted_bitmap = leaf->block_sorted_bitmap | one[block_idx];
-					}
-					block_ptr = leaf->header_start + block_idx;
+					curr_val_ptr = leaf->header_start + block_idx;
 				} else {
 					// in block
-					block_ptr++;
-				}
-				curr_val_ptr = block_ptr;
-			} else {
-				// if log_block_equal, increment both log and block ptr
-				if (log_block_equal) {
-					increment_log = true;
-					increment_block = true;
-				} else if (using_log_ptr) {
-					increment_log = true;
-				} else {
-					increment_block = true;
-				}
-				if (increment_log) {
-					if (log_ptr + 1 < leaf->num_inserts_in_log) {
-						++log_ptr;
-					} else {
-						// this is end()
-						log_ptr = leaf->N;
-					}
-				}
-				if (increment_block) {
-					if (block_ptr < leaf->blocks_start && elts_in_block_copy > 0) {
-						// in header, need to switch to block
-						block_ptr = leaf->blocks_start + block_idx * block_size;
-					} else if (elts_in_block_copy == 0 || block_ptr == leaf->blocks_start + block_idx * block_size + elts_in_block_copy - 1) {
-						// at end of current block, need to switch to next block header
-						block_idx++;
-						if (block_idx == leaf->num_blocks) { 
-							// this is end()
-							block_ptr = leaf->N;
-							curr_val_ptr = log_ptr;
-							return *this;
-						} else {
-							elts_in_block_copy = leaf->count_block(block_idx);
-							if ((leaf->block_sorted_bitmap & one[block_idx])) {
-							} else {
-								leaf->sort_range(leaf->blocks_start + block_idx * block_size, leaf->blocks_start + block_idx * block_size + elts_in_block_copy);
-								leaf->block_sorted_bitmap = leaf->block_sorted_bitmap | one[block_idx];
-							}
-							block_ptr = leaf->header_start + block_idx;
-						}
-					} else {
-						// in block
-						block_ptr++;
-					}
-				}
-				if (log_ptr == leaf->N && block_ptr == leaf->N) {
-					curr_val_ptr = leaf->N;
-				} else if (log_ptr == leaf->N) {
-					blocks_only = true;
-					log_block_equal = false;
-					using_log_ptr = false;
-					curr_val_ptr = block_ptr;
-				} else if (block_ptr == leaf->N) {
-					log_only = true;
-					log_block_equal = false;
-					using_log_ptr = true;
-					curr_val_ptr = log_ptr;
-				} else {
-					log_key = leaf->blind_read_key(log_ptr);
-					block_key = leaf->blind_read_key(block_ptr);
-					if (log_key < block_key) {
-						curr_val_ptr = log_ptr;
-						using_log_ptr = true;
-						log_block_equal = false;
-					} else if (log_key == block_key) {
-						curr_val_ptr = log_ptr;
-						using_log_ptr = true;
-						log_block_equal = true;
-					} else {
-						curr_val_ptr = block_ptr;
-						using_log_ptr = false;
-						log_block_equal = false;
-					}
+					curr_val_ptr++;
 				}
 			}
 
@@ -604,115 +534,31 @@ public:
 		iterator operator ++ (int) {
 			iterator tmp = *this;   // copy ourselves
 			if (curr_val_ptr == leaf->N) { return tmp;}
-
-			bool increment_log = false;
-			bool increment_block = false;
-
+			
 			if (log_only) {
-				increment_log = true;
-				if (log_ptr + 1 < leaf->num_inserts_in_log) {
-					++log_ptr;
+				if (curr_val_ptr + 1 < leaf->num_inserts_in_log) {
+					++curr_val_ptr;
 				} else {
 					// this is end()
-					log_ptr = leaf->N;
+					curr_val_ptr = leaf->N;
 				}
-				curr_val_ptr = log_ptr;
-			} else if (blocks_only) {
-				increment_block = true;
+			} else {
 				// increment block pointer
-				if (block_ptr < leaf->blocks_start && elts_in_block_copy > 0) {
+				if (curr_val_ptr < leaf->blocks_start && count_per_block[block_idx] > 0) {
 					// in header, need to switch to block
-					block_ptr = leaf->blocks_start + block_idx * leaf->block_size;
-				} else if (elts_in_block_copy == 0 || block_ptr == leaf->blocks_start + block_idx * leaf->block_size + elts_in_block_copy - 1) {
+					curr_val_ptr = leaf->blocks_start + block_idx * block_size;
+				} else if (count_per_block[block_idx] == 0 || curr_val_ptr == leaf->blocks_start + block_idx * block_size + count_per_block[block_idx] - 1) {
 					// at end of current block, need to switch to next block header
 					block_idx++;
 					if (block_idx == leaf->num_blocks) { 
 						// this is end()
 						curr_val_ptr = leaf->N;
-						return tmp; 
+						return *this; 
 					}
-					elts_in_block_copy = leaf->count_block(block_idx);
-					if ((leaf->block_sorted_bitmap & one[block_idx])) {
-					} else {
-						leaf->sort_range(leaf->blocks_start + block_idx * leaf->block_size, leaf->blocks_start + block_idx * leaf->block_size + elts_in_block_copy);
-						leaf->block_sorted_bitmap = leaf->block_sorted_bitmap | one[block_idx];
-					}
-					block_ptr = leaf->header_start + block_idx;
+					curr_val_ptr = leaf->header_start + block_idx;
 				} else {
 					// in block
-					block_ptr++;
-				}
-				curr_val_ptr = block_ptr;
-			} else {
-				// if log_block_equal, increment both log and block ptr
-				if (log_block_equal) {
-					increment_log = true;
-					increment_block = true;
-				} else if (using_log_ptr) {
-					increment_log = true;
-				} else {
-					increment_block = true;
-				}
-				if (increment_block) {
-					if (block_ptr < leaf->blocks_start && elts_in_block_copy > 0) {
-						// in header, need to switch to block
-						block_ptr = leaf->blocks_start + block_idx * leaf->block_size;
-					} else if (elts_in_block_copy == 0 || block_ptr == leaf->blocks_start + block_idx * leaf->block_size + elts_in_block_copy - 1) {
-						// at end of current block, need to switch to next block header
-						block_idx++;
-						if (block_idx == leaf->num_blocks) { 
-							// this is end()
-							block_ptr = leaf->N;
-						} else {
-							elts_in_block_copy = leaf->count_block(block_idx);
-							if ((leaf->block_sorted_bitmap & one[block_idx])) {
-							} else {
-								leaf->sort_range(leaf->blocks_start + block_idx * leaf->block_size, leaf->blocks_start + block_idx * leaf->block_size + elts_in_block_copy);
-								leaf->block_sorted_bitmap = leaf->block_sorted_bitmap | one[block_idx];
-							}
-							block_ptr = leaf->header_start + block_idx;
-						}
-					} else {
-						// in block
-						block_ptr++;
-					}
-				}
-				if (increment_log) {
-					if (log_ptr + 1 < leaf->num_inserts_in_log) {
-						++log_ptr;
-					} else {
-						// this is end()
-						log_ptr = leaf->N;
-					}
-				}
-				if (log_ptr == leaf->N && block_ptr == leaf->N) {
-					curr_val_ptr = leaf->N;
-				} else if (log_ptr == leaf->N) {
-					blocks_only = true;
-					log_block_equal = false;
-					using_log_ptr = false;
-					curr_val_ptr = block_ptr;
-				} else if (block_ptr == leaf->N) {
-					log_only = true;
-					log_block_equal = false;
-					using_log_ptr = true;
-					curr_val_ptr = log_ptr;
-				} else {
-					log_key = leaf->blind_read_key(log_ptr);
-					block_key = leaf->blind_read_key(block_ptr);
-					if (log_key < block_key) {
-						curr_val_ptr = log_ptr;
-						using_log_ptr = true;
-						log_block_equal = false;
-					} else if (log_key == block_key) {
-						curr_val_ptr = log_ptr;
-						using_log_ptr = true;
-						log_block_equal = true;
-					} else {
-						curr_val_ptr = block_ptr;
-						using_log_ptr = false;
-						log_block_equal = false;
-					}
+					curr_val_ptr++;
 				}
 			}
 

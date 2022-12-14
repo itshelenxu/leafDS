@@ -1956,7 +1956,7 @@ static long get_usecs() {
       return -1;
     }
     
-    // printf("iter = %lu\n", it_leafds);
+    printf("iter = %lu\n", it_leafds);
     ++it_correct;
     ++it_leafds;
     count++;
@@ -1978,7 +1978,7 @@ static long get_usecs() {
   if (r) {
     return r;
   }
-
+  printf("Ran iterator test\n");
   return 0;
 }
 
