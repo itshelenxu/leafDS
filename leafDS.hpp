@@ -210,6 +210,7 @@ public:
   void get_max_2(key_type* max_key, key_type* second_max_key) const;
   void shift_left(LeafDS<log_size, header_size, block_size, key_type, Ts...>* right, int shiftnum);
   void shift_right(LeafDS<log_size, header_size, block_size, key_type, Ts...>* left, int shiftnum);
+//   iterator lower_bound(const key_type& key);
   key_type& get_key_at_sorted_index_nonconst(size_t i);
   key_type& get_key_at_sorted_index(size_t i) const;
   key_type& get_key_at_sorted_index_with_print(size_t i) const;
@@ -363,6 +364,15 @@ public:
     iterator end() {
         return iterator(N, this);
     }
+
+	iterator lower_bound(const key_type& key) {
+		auto it_leafds = iterator(this);
+		auto end = iterator(N, this);
+		while (it_leafds != end && it_leafds.key() < key) {
+			it_leafds++;
+		}
+		return it_leafds;
+	}
 
 	//! STL-like iterator object for B+ tree items. The iterator points to a
 	//! specific slot number in a leaf.
