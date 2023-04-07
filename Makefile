@@ -8,9 +8,10 @@ CXX=clang++
 #CXX=g++-11
 #CXX=../OpenCilk-10.0.1-Linux/bin/clang++
 
-CFLAGS := -Wall -Wno-address-of-packed-member -Wextra -O$(OPT) -gdwarf-4  -std=c++20 -ftemplate-backtrace-limit=0 -ferror-limit=1
+CFLAGS := -Wall -Wno-address-of-packed-member -Wextra -O$(OPT) -gdwarf-4  -std=c++20 -ftemplate-backtrace-limit=0 -ferror-limit=1 -IParallelTools/
 
-LDFLAGS := 
+
+LDFLAGS := -lrt -lm -lpthread -lm -ldl -latomic -ljemalloc
 
 ifeq ($(DEBUG),0)
 CFLAGS += -DNDEBUG

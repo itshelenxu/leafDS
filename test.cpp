@@ -11,8 +11,10 @@
 #include <random>
 #include <set>
 #include <unordered_set>
-
-#include "parallel.h"
+#include <thread>
+#include "ParallelTools/reducer.h"
+#include "ParallelTools/parallel.h"
+// #include "parallel.h"
 #include "leafDS.hpp"
 
 #define HEADER_SIZE 32
@@ -23,11 +25,104 @@
 #define N LOG_SIZE + HEADER_SIZE + BLOCK_SIZE * HEADER_SIZE
 
 #define key_type uint64_t
+#define cilk_for for
 
 static long get_usecs() {
   struct timeval st;
   gettimeofday(&st, NULL);
   return st.tv_sec * 1000000 + st.tv_usec;
+}
+
+template <class T>
+std::vector<T> create_random_data(size_t n, size_t max_val,
+                                  std::seed_seq &seed) {
+
+  std::mt19937_64 eng(seed); // a source of random data
+
+  std::uniform_int_distribution<T> dist(0, max_val);
+  std::vector<T> v(n);
+
+  generate(begin(v), end(v), bind(dist, eng));
+  return v;
+}
+struct ThreadArgs {
+    std::function<void(int, int)> func;
+    int start;
+    int end;
+};
+
+
+void* threadFunction(void* arg) {
+    ThreadArgs* args = static_cast<ThreadArgs*>(arg);
+    args->func(args->start, args->end);
+    pthread_exit(NULL);
+}
+
+template <typename F> inline void parallel_for_with_id(size_t start, size_t end, F f) {
+    const int numThreads = 48;
+    pthread_t threads[numThreads];
+    ThreadArgs threadArgs[numThreads];
+    int per_thread = (end - start)/numThreads;
+
+    // Create the threads and start executing the lambda function
+    for (int i = 0; i < numThreads; i++) {
+        threadArgs[i].func = [&f, i](int arg1, int arg2) {
+            for (int k = arg1 ; k < arg2; k++) {
+                f(i, k);
+            }
+        };
+
+        threadArgs[i].start = start + (i * per_thread);
+        if (i == numThreads - 1) {
+          threadArgs[i].end = end;
+        } else {
+          threadArgs[i].end = start + ((i+1) * per_thread);
+        }
+        int result = pthread_create(&threads[i], NULL, threadFunction, &threadArgs[i]);
+
+        if (result != 0) {
+            std::cerr << "Failed to create thread " << i << std::endl;
+            exit(-1);
+        }
+    }
+
+    // Wait for the threads to finish
+    for (int i = 0; i < numThreads; i++) {
+        pthread_join(threads[i], NULL);
+    }
+}
+template <typename F> inline void parallel_for(size_t start, size_t end, F f) {
+    const int numThreads = 48;
+    pthread_t threads[numThreads];
+    ThreadArgs threadArgs[numThreads];
+    int per_thread = (end - start)/numThreads;
+
+    // Create the threads and start executing the lambda function
+    for (int i = 0; i < numThreads; i++) {
+        threadArgs[i].func = [&f](int arg1, int arg2) {
+            for (int k = arg1 ; k < arg2; k++) {
+                f(k);
+            }
+        };
+
+        threadArgs[i].start = start + (i * per_thread);
+        if (i == numThreads - 1) {
+          threadArgs[i].end = end;
+        } else {
+          threadArgs[i].end = start + ((i+1) * per_thread);
+        }
+        int result = pthread_create(&threads[i], NULL, threadFunction, &threadArgs[i]);
+
+        if (result != 0) {
+            std::cerr << "Failed to create thread " << i << std::endl;
+            exit(-1);
+        }
+    }
+
+    // Wait for the threads to finish
+    for (int i = 0; i < numThreads; i++) {
+        pthread_join(threads[i], NULL);
+    }
 }
 
 [[nodiscard]] int parallel_test_insert_leafDS(uint32_t el_count, uint32_t num_copies) {
@@ -54,35 +149,28 @@ static long get_usecs() {
     }
 
     // do sum
-    std::vector<uint64_t> partial_sums(getWorkers() * 8);
+    // std::vector<uint64_t> partial_sums(getWorkers() * 8);
+    ParallelTools::Reducer_sum<uint64_t> sum;
     start = get_usecs();
     cilk_for(uint32_t i = 0; i < num_copies; i++) {
-      partial_sums[getWorkerNum() * 8] += dsv[i].sum_keys_with_map();
-    }
-    uint64_t count{0};
-    for(int i = 0; i < getWorkers(); i++) {
-      count += partial_sums[i*8];
+      sum += dsv[i].sum_keys_with_map();
     }
     end = get_usecs();
 
-    printf("\ttrial %u, total sum %lu\n", trial, count);
+    printf("\ttrial %u, total sum %lu\n", trial, sum.get());
 
     if (trial > 0) {
       sum_times_with_map[trial - 1] = end - start;
     }
 
-    for(size_t i = 0; i < partial_sums.size(); i++) { partial_sums[i] = 0; }
+    ParallelTools::Reducer_sum<uint64_t> sum_direct;
     start = get_usecs();
     cilk_for(uint32_t i = 0; i < num_copies; i++) {
-      partial_sums[getWorkerNum() * 8] += dsv[i].sum_keys_direct();
+      sum_direct += dsv[i].sum_keys_direct();
     }
-    count = 0;
-    for(int i = 0; i < getWorkers(); i++) {
-      count += partial_sums[i*8];
-    }
-    end = get_usecs();
 
-    printf("\ttrial %u, total sum %lu\n", trial, count);
+    end = get_usecs();
+    printf("\ttrial %u, total sum %lu\n", trial, sum_direct.get());
 
     if (trial > 0) {
       sum_times_direct[trial - 1] = end - start;
@@ -102,278 +190,117 @@ static long get_usecs() {
   return 0;
 }
 
-[[nodiscard]] int parallel_test_leafDS(uint32_t el_count, uint32_t num_copies, double prob_insert) {
+
+template <class T>
+[[nodiscard]] int parallel_test_sorted_vector(uint32_t num_bytes, uint32_t total_num_elts) {
   std::vector<uint64_t> insert_times(NUM_TRIALS);
-  std::vector<uint64_t> sum_times_with_map(NUM_TRIALS);
-  std::vector<uint64_t> sum_times_direct(NUM_TRIALS);
-  std::vector<key_type> elts;
-  // prefill the input
-  std::uniform_int_distribution<key_type> dist_el(1, 1088 * 16);
-  std::mt19937 rng(0);
-  for (uint32_t j = 0; j < el_count; j++) {
-    key_type el = dist_el(rng);
-    elts.push_back(el);
-  }
-
-  uint64_t start, end;
-  for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
-    // do inserts
-    std::vector<LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type>> dsv(num_copies);
-
-    // add the first half
-    cilk_for(uint32_t i = 0; i < num_copies; i++) {
-      std::uniform_real_distribution<double> dist_flip(.25, .75);
-
-      for (uint32_t j = 0; j < el_count / 2; j++) {
-        key_type el = elts[j];
-        dsv[i].insert(el);
-        /*
-        if (dist_flip(rng) < prob_insert) {
-          dsv[i].insert(el);
-        } else {
-          dsv[i].remove(el);
-        }
-        */
-      }
-    }
-#if STATS
-    printf("first half:\n");
-    dsv[0].report_redistributes();
-#endif
-
-    // time the second half
-    start = get_usecs();
-    cilk_for(uint32_t i = 0; i < num_copies; i++) {
-      std::uniform_real_distribution<double> dist_flip(.25, .75);
-
-      for (uint32_t j = el_count / 2; j < el_count; j++) {
-        key_type el = elts[j];
-        dsv[i].insert(el);
-        /*
-        key_type el = dist_el(rng);
-        if (dist_flip(rng) < prob_insert) {
-          dsv[i].insert(el);
-        } else {
-          dsv[i].remove(el);
-        }
-        */
-      }
-    }
-    end = get_usecs();
-    if (trial > 0) {
-      insert_times[trial - 1] = end - start;
-    }
-#if STATS
-    printf("all:\n");
-    dsv[0].report_redistributes();
-#endif
-
-    // do sum
-    std::vector<uint64_t> partial_sums(getWorkers() * 8);
-    start = get_usecs();
-    cilk_for(uint32_t i = 0; i < num_copies; i++) {
-      partial_sums[getWorkerNum() * 8] += dsv[i].sum_keys_with_map();
-    }
-    uint64_t count{0};
-    for(int i = 0; i < getWorkers(); i++) {
-      count += partial_sums[i*8];
-    }
-    end = get_usecs();
-
-    printf("\ttrial %u, sum with map %lu\n", trial, count);
-
-    if (trial > 0) {
-      sum_times_with_map[trial - 1] = end - start;
-    }
-
-    for(size_t i = 0; i < partial_sums.size(); i++) { partial_sums[i] = 0; }
-
-    start = get_usecs();
-    cilk_for(uint32_t i = 0; i < num_copies; i++) {
-      partial_sums[getWorkerNum() * 8] += dsv[i].sum_keys_direct();
-    }
-    count = 0;
-    for(int i = 0; i < getWorkers(); i++) {
-      count += partial_sums[i*8];
-    }
-    end = get_usecs();
-
-    printf("\ttrial %u, sum with direct %lu\n", trial, count);
-
-    if (trial > 0) {
-      sum_times_direct[trial - 1] = end - start;
-    }
-  }
-
-  std::sort(insert_times.begin(), insert_times.end());
-  std::sort(sum_times_with_map.begin(), sum_times_with_map.end());
-  std::sort(sum_times_direct.begin(), sum_times_direct.end());
-
-  printf("LeafDS: parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, el_count, insert_times[MEDIAN_TRIAL]);
-
-  printf("LeafDS: parallel sum time with map for %u copies of %u elts each = %lu us\n", num_copies, el_count, sum_times_with_map[MEDIAN_TRIAL]);
-
-  printf("LeafDS: parallel sum time with subtraction for %u copies of %u elts each = %lu us\n", num_copies, el_count, sum_times_direct[MEDIAN_TRIAL]);
-
-  return 0;
-}
-
-[[nodiscard]] int parallel_test_sorted_vector(uint32_t el_count, uint32_t num_copies, double prob_insert) {
-  std::vector<uint64_t> insert_times(NUM_TRIALS);
+  std::vector<uint64_t> query_times(NUM_TRIALS);
   std::vector<uint64_t> sum_times(NUM_TRIALS);
-  std::vector<key_type> elts;
+  typedef std::pair<T, T> value_type;
+  assert(num_bytes % sizeof(value_type) == 0);
+  uint32_t num_slots = num_bytes / sizeof(value_type);
+  uint32_t num_copies = total_num_elts / num_slots;
+  std::vector<int> order(num_copies);
+  for(uint32_t i = 0; i < num_copies; i++) {
+    order[i] = i;
+  }
+  
+  auto rng = std::default_random_engine {};
+  std::shuffle(order.begin(), order.end(), rng);
+
+  printf("num bytes = %u, slots = %u, copies = %u, total elts = %u, got %u\n", num_bytes, num_slots, num_copies, num_slots*num_copies, total_num_elts);
+  std::seed_seq seed{0};
+  std::vector<T> data = create_random_data<uint64_t>(num_slots, std::numeric_limits<T>::max() / 2, seed);
 
   uint64_t start, end;
 
   for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
-    std::vector<std::vector<key_type>> dsv(num_copies);
+    std::vector<std::vector<value_type>> dsv(num_copies);
     for(uint32_t i = 0; i < num_copies; i++) {
-      dsv[i].reserve(el_count);
-    }
-    // prefill the input
-    std::uniform_int_distribution<key_type> dist_el(1, 1088 * 16);
-    std::mt19937 rng(0);
-    for (uint32_t j = 0; j < el_count; j++) {
-      key_type el = dist_el(rng);
-      elts.push_back(el);
+      dsv[i].reserve(num_slots);
     }
 
-    cilk_for(uint32_t i = 0; i < num_copies; i++) {
-#if DEBUG
-      std::unordered_set<key_type> checker;
-#endif
-      std::uniform_real_distribution<double> dist_flip(.25, .75);
-      for (uint32_t j = 0; j < el_count / 2; j++) {
+    parallel_for(0, num_copies, [&](const uint32_t &i) {
+      for (uint32_t j = 0; j < num_slots / 2; j++) {
         // find the elt at most the thing to insert
-        size_t idx = 0;
-        key_type el = elts[j];
-        for(; idx < dsv[i].size(); idx++) {
-          if(dsv[i][idx] == el) {
-            break;
-          } else if (dsv[i][idx] > el) {
-            break;
-          }
-        }
-        if(dsv[i].size() == 0 || dsv[i][idx] != el) {
-          dsv[i].insert(dsv[i].begin() + idx, el);
-        }
+        T key = data[j] * 2 + 1;
+        std::pair<T, T> val = {key, key};
+        auto lo = std::lower_bound(dsv[i].begin(), dsv[i].end(), val);
 
-        /*
-        if (dist_flip(rng) < prob_insert) {
-          // vector does before
-          if(dsv[i].size() == 0 || dsv[i][idx] != el) {
-  #if DEBUG_PRINT
-            printf("\telt %u not found, inserting at idx %lu, current size = %lu\n", el, idx, dsv[i].size());
-  #endif
-            dsv[i].insert(dsv[i].begin() + idx, el);
-          }
-  #if DEBUG
-          checker.insert(el);
-          // test sortedness
-          for(idx = 1; idx < dsv[i].size(); idx++) {
-            assert(dsv[i][idx] > dsv[i][idx-1]);
-          }
-          printf("\n");
-          for(uint32_t i = 0; i < num_copies; i++) {
-            for(auto elt : checker) {
-              if (std::find(dsv[i].begin(), dsv[i].end(), elt) == dsv[i].end()) {
-                printf("didn't find %u\n", elt);
-                assert(false);
-              }
-            }
-
-            tbassert(dsv[i].size() == checker.size(), "got %lu elts, should be %lu\n", dsv[i].size(), checker.size());
-          }
-    #endif
-        } else { // remove
-          if(dsv[i][idx] == el) {
-            dsv[i].erase(dsv[i].begin() + idx);
-          }
+        if(lo == dsv[i].end() || (*lo).first != key) {
+          dsv[i].insert(lo, val);
         }
-        */
       }
-    }
+    });
+    printf("size after half = %lu\n", dsv[0].size());
 
-    printf("\tsize after half = %lu\n", dsv[0].size());
     start = get_usecs();
-    cilk_for(uint32_t i = 0; i < num_copies; i++) {
-#if DEBUG
-      std::unordered_set<key_type> checker;
-#endif
-      std::uniform_real_distribution<double> dist_flip(.25, .75);
-      for (uint32_t j = el_count / 2; j < el_count; j++) {
-        key_type el = elts[j];
-        // find the elt at most the thing to insert
-        size_t idx = 0;
-        for(; idx < dsv[i].size(); idx++) {
-          if(dsv[i][idx] == el) {
-            break;
-          } else if (dsv[i][idx] > el) {
-            break;
-          }
-        }
-        if(dsv[i].size() == 0 || dsv[i][idx] != el) {
-          dsv[i].insert(dsv[i].begin() + idx, el);
-        }
-        /*
-        if (dist_flip(rng) < prob_insert) {
-          // vector does before
-          if(dsv[i].size() == 0 || dsv[i][idx] != el) {
-  #if DEBUG_PRINT
-            printf("\telt %u not found, inserting at idx %lu, current size = %lu\n", el, idx, dsv[i].size());
-  #endif
-            dsv[i].insert(dsv[i].begin() + idx, el);
-          }
-  #if DEBUG
-          checker.insert(el);
-          // test sortedness
-          for(idx = 1; idx < dsv[i].size(); idx++) {
-            assert(dsv[i][idx] > dsv[i][idx-1]);
-          }
-          printf("\n");
-          for(uint32_t i = 0; i < num_copies; i++) {
-            for(auto elt : checker) {
-              if (std::find(dsv[i].begin(), dsv[i].end(), elt) == dsv[i].end()) {
-                printf("didn't find %u\n", elt);
-                assert(false);
-              }
-            }
+    for(uint32_t j = num_slots / 2; j < num_slots; j++) {
+      parallel_for(0, num_copies, [&](const uint32_t &i) {
+        T key = data[j] * 2 + 1;
+        std::pair<T, T> val = {key, key};
+        auto lo = std::lower_bound(dsv[order[i]].begin(), dsv[order[i]].end(), val);
 
-            tbassert(dsv[i].size() == checker.size(), "got %lu elts, should be %lu\n", dsv[i].size(), checker.size());
-          }
-    #endif
-        } else { // remove
-          if(dsv[i][idx] == el) {
-            dsv[i].erase(dsv[i].begin() + idx);
-          }
+        if(lo == dsv[order[i]].end() || (*lo).first != key) {
+          dsv[order[i]].insert(lo, val);
         }
-        */
-      }
+      });
     }
-
     end = get_usecs();
-
-    printf("\tsize after all = %lu\n", dsv[0].size());
+    printf("size after second half = %lu\n", dsv[0].size());
     if (trial > 0) {
       insert_times[trial - 1] = end - start;
+      printf("second half insert time = %lu\n", end - start);
     }
 
-    std::vector<uint64_t> partial_sums(getWorkers() * 8);
+    // do finds
+    // shuffle data
+    std::shuffle(data.begin(), data.end(), rng);
+    std::vector<uint64_t> partial_sums_find(48 * 8);
+
+    start = get_usecs();
+    for(uint32_t j = 0; j < num_slots; j++) {
+      parallel_for_with_id(0, num_copies, [&](const uint32_t thread_id, const uint32_t &i) {
+        // find the elt at most the thing to insert
+        T key = data[j] * 2;
+        std::pair<T, T> val = {key, key};
+        auto lo = std::lower_bound(dsv[order[i]].begin(), dsv[order[i]].end(), val);
+
+        if (lo != dsv[order[i]].end() || (*lo).first == key) { partial_sums_find[thread_id * 8]++; }
+      });
+    }
+    
+    uint64_t found = 0;
+    for(uint32_t thread = 0; thread < 48; thread++) {
+      found += partial_sums_find[thread * 8];
+    }
+    end = get_usecs();
+    if (trial > 0) {
+      query_times[trial - 1] = end - start;
+      printf("find time = %lu, num found %lu\n", end - start, found);
+    }
+
+    // ParallelTools::Reducer_sum<uint64_t> sum;
+    std::vector<uint64_t> partial_sums(48 * 8);
+
     start = get_usecs();
 
-    cilk_for(uint32_t i = 0; i < num_copies; i++) {
+    parallel_for_with_id(0, num_copies, [&](const uint32_t thread_id, const uint32_t &i) {
+    // parallel_for(0, num_copies, [&](const uint32_t &i) {
       uint64_t local_sum = 0;
       for(size_t j = 0; j < dsv[i].size(); j++) {
-        local_sum += dsv[i][j];
+        local_sum += dsv[i][j].first;
       }
-      partial_sums[getWorkerNum() * 8] += local_sum;
+      partial_sums[thread_id * 8] += local_sum;
+    });
+
+    T sum = 0;
+    for(uint32_t thread = 0; thread < 48; thread++) {
+      sum += partial_sums[thread * 16];
     }
-    uint64_t count{0};
-    for(int i = 0; i < getWorkers(); i++) {
-      count += partial_sums[i*8];
-    }
+
     end = get_usecs();
-    printf("\ttrial %d, total sum %lu\n", trial, count);
+    printf("\ttrial %d, total sum %lu\n", trial, sum);
 
     if (trial > 0) {
       sum_times[trial - 1] = end - start;
@@ -383,12 +310,14 @@ static long get_usecs() {
   std::sort(insert_times.begin(), insert_times.end());
   std::sort(sum_times.begin(), sum_times.end());
 
-  printf("Sorted vector: parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, el_count, insert_times[MEDIAN_TRIAL]);
+  printf("Sorted vector: parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, insert_times[MEDIAN_TRIAL]);
+  printf("Sorted vector: parallel find time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, query_times[MEDIAN_TRIAL]);
 
-  printf("Sorted vector: parallel sum time for %u copies of %u elts each = %lu us\n", num_copies, el_count, sum_times[MEDIAN_TRIAL]);
+  printf("Sorted vector: parallel sum time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, sum_times[MEDIAN_TRIAL]);
   return 0;
 }
 
+/*
 [[nodiscard]] int parallel_test_unsorted_vector(uint32_t el_count, uint32_t num_copies, double prob_insert) {
   std::vector<uint64_t> insert_times(NUM_TRIALS);
   std::vector<uint64_t> sum_times(NUM_TRIALS);
@@ -427,18 +356,6 @@ static long get_usecs() {
           dsv[i].push_back(elts[j]);
         }
       
-        /*
-        if (dist_flip(rng) < prob_insert) {
-          // if not found, add it to the end
-          if(idx == dsv[i].size()) {
-            dsv[i].push_back(el);
-          }
-        } else { // delete
-          if(idx < dsv[i].size()) {
-            dsv[i].erase(dsv[i].begin() + idx);
-          }
-        }
-      */
       }
     }
     printf("\tsize after half = %lu\n", dsv[0].size());
@@ -461,18 +378,6 @@ static long get_usecs() {
           dsv[i].push_back(el);
         }
 
-        /*
-        if (dist_flip(rng) < prob_insert) {
-          // if not found, add it to the end
-          if(idx == dsv[i].size()) {
-            dsv[i].push_back(el);
-          }
-        } else { // delete
-          if(idx < dsv[i].size()) {
-            dsv[i].erase(dsv[i].begin() + idx);
-          }
-        }
-        */
       }
     }
     end = get_usecs();
@@ -516,25 +421,28 @@ static long get_usecs() {
 
   return 0;
 }
+*/
 
 
-[[nodiscard]] int parallel_test(uint32_t el_count, uint32_t num_copies, double prob_insert) {
+[[nodiscard]] int parallel_test(uint32_t el_count, uint32_t num_copies, uint32_t vector_size) {
+/*
   int r = parallel_test_leafDS(el_count, num_copies, prob_insert);
   if (r) {
     return r;
   }
   printf("\n");
-  
-  r = parallel_test_sorted_vector(el_count, num_copies, prob_insert);
+*/
+  int r = parallel_test_sorted_vector<uint64_t>(vector_size, el_count);
   if (r) {
     return r;
   }
   printf("\n");
-
+/*
   r = parallel_test_unsorted_vector(el_count, num_copies, prob_insert);
   if (r) {
     return r;
   }
+*/
   return 0;
 }
 
@@ -732,6 +640,7 @@ static long get_usecs() {
   return 0;
 }
 
+/*
 [[nodiscard]] int parallel_test_perf(uint32_t el_count, uint32_t num_copies, double prob_insert) {
   int r = parallel_test_leafDS(el_count, num_copies, prob_insert);
   if (r) {
@@ -741,6 +650,7 @@ static long get_usecs() {
   
   return 0;
 }
+*/
 
 [[nodiscard]] int insert_delete_templated(uint32_t el_count, uint32_t num_queries, uint32_t max_query_size) {
   LeafDS<LOG_SIZE, HEADER_SIZE, BLOCK_SIZE, key_type> ds;
@@ -1342,7 +1252,7 @@ static long get_usecs() {
     ds_right_1.insert(el);
     if (!ds_right_1.has(el)) {
       ds_right_1.print();
-      printf("Missing from ds_right on insert, elt: %lu , index = %lu\n", el, i);
+      printf("Missing from ds_right on insert, elt: %lu , index = %u\n", el, i);
       return -1;
     }
   }
@@ -1388,7 +1298,7 @@ static long get_usecs() {
     if (!ds_left_1.has(el)) {
       ds_left_1.print();
       ds_right_1.print();
-      printf("Missing from left leaf after inserts and deletes, elt: %lu , index = %lu\n", el, i);
+      printf("Missing from left leaf after inserts and deletes, elt: %lu , index = %u\n", el, i);
       return -1;
     }
   } 
@@ -1489,7 +1399,7 @@ static long get_usecs() {
   printf("ds_left num elems = %lu, correct = %lu \n", ds_left.get_num_elements(), elts_left_remaining_1.size());
   printf("shifting diff %lu\n", ds_right.get_num_elements() - ds_left.get_num_elements());
   unsigned int shiftnum = (ds_right.get_num_elements() - ds_left.get_num_elements()) >> 1;
-  printf("shifting real %lu\n", shiftnum);
+  printf("shifting real %u\n", shiftnum);
 
   if (ds_left.get_num_elements() >= ds_right.get_num_elements()) {
     printf("right has fewer than left?? skipping. \n");
@@ -1665,7 +1575,7 @@ static long get_usecs() {
     return -1;
   }
   unsigned int shiftnum = (ds_left.get_num_elements() - ds_right.get_num_elements()) >> 1;
-  printf("shifting real %lu\n", shiftnum);
+  printf("shifting real %u\n", shiftnum);
 
   ds_right.shift_right(&(ds_left), shiftnum);
 
@@ -1701,7 +1611,7 @@ static long get_usecs() {
     auto el = elts_right_remaining_1[i];
     if (!ds_right.has(el)) {
       ds_right.print();
-      printf("Missing elt in right leaf after shift right from orig, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
+      printf("Missing elt in right leaf after shift right from orig, elt: %lu index:%u , el_count = %u\n", el, i, el_count);
       return -1;
     }
   }
@@ -1711,12 +1621,12 @@ static long get_usecs() {
     auto el = elts_left_remaining_1[i];
     if (!ds_right.has(el)) {
       ds_right.print();
-      printf("Missing elt in right leaf after shift right from left, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
+      printf("Missing elt in right leaf after shift right from left, elt: %lu index:%u , el_count = %u\n", el, i, el_count);
       return -1;
     }
     if (ds_left.has(el)) {
       ds_left.print();
-      printf("Elt not removed from left leaf after shift right from left, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
+      printf("Elt not removed from left leaf after shift right from left, elt: %lu index:%u , el_count = %u\n", el, i, el_count);
       return -1;
     }
   }
@@ -1725,12 +1635,12 @@ static long get_usecs() {
     auto el = elts_left_remaining_1[i];
     if (!ds_left.has(el)) {
       ds_left.print();
-      printf("Missing elt in left leaf after shift right, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
+      printf("Missing elt in left leaf after shift right, elt: %lu index:%u , el_count = %u\n", el, i, el_count);
       return -1;
     }
     if (ds_right.has(el) && !std::count(elts_right_remaining_1.begin(), elts_right_remaining_1.end(), el)) {
       ds_right.print();
-      printf("Elt should not exist in right leaf after shift right, elt: %lu index:%u , el_count = %lu\n", el, i, el_count);
+      printf("Elt should not exist in right leaf after shift right, elt: %lu index:%u , el_count = %u\n", el, i, el_count);
       return -1;
     }
   }
@@ -1816,7 +1726,7 @@ static long get_usecs() {
   printf("\n*** finished inserting elts ***\n");
   printf("num elts = %lu\n", checker.size());
   // then remove all the stuff we added
-  for (int cur_i = 0; cur_i < el_count; cur_i ++ ) {
+  for (uint32_t cur_i = 0; cur_i < el_count; cur_i ++ ) {
     auto el = elts[cur_i];
     ds.remove(el);
     elts_sorted.erase(std::remove(elts_sorted.begin(), elts_sorted.end(), el), elts_sorted.end());
@@ -1881,7 +1791,7 @@ static long get_usecs() {
     printf("got sum direct %lu\n", sum_direct);
     printf("got sum correct %lu\n", correct_sum);
     printf("got sum correct 2 %lu\n", correct_sum2);
-    printf("for el count %lu\n", el_count);
+    printf("for el count %u\n", el_count);
 
     if (correct_sum2 != sum) {
       ds.print();
@@ -1951,12 +1861,12 @@ static long get_usecs() {
     key_type leafds_key = it_leafds.key();
     // auto leafds_key_deref = *it_leafds;
     if (correct_key != leafds_key) {
-      printf("wrong iterator value, expected %lu but got %lu on count = %lu, iter = %lu\n", correct_key, leafds_key, count, it_leafds);
+      printf("wrong iterator value, expected %lu but got %lu on count = %d, iter = %lu\n", correct_key, leafds_key, count, it_leafds.key());
       ds.print();
       return -1;
     }
     
-    printf("iter = %lu\n", it_leafds);
+    printf("iter = %lu\n", it_leafds.key());
     ++it_correct;
     ++it_leafds;
     count++;
@@ -1992,6 +1902,7 @@ int main(int argc, char *argv[]) {
   // clang-format off
   options.add_options()
     ("el_count", "how many values to insert", cxxopts::value<int>()->default_value( "100000"))
+    ("array_bytes", "size of vec in bytes for copies", cxxopts::value<int>()->default_value( "1024"))
     ("num_copies", "number of copies for parallel test", cxxopts::value<int>()->default_value( "100000"))
     ("v, verify", "verify the results of the test, might be much slower")
     ("update_test", "time updating")
@@ -2013,6 +1924,7 @@ int main(int argc, char *argv[]) {
   auto result = options.parse(argc, argv);
   uint32_t el_count = result["el_count"].as<int>();
   uint32_t num_copies = result["num_copies"].as<int>();
+  uint32_t array_bytes = result["array_bytes"].as<int>();
 
   bool verify = result["verify"].as<bool>();
   printf("el count %u\n", el_count);
@@ -2030,7 +1942,7 @@ int main(int argc, char *argv[]) {
   }
   
   if (result["parallel_test"].as<bool>()) {
-    return parallel_test(el_count, num_copies, 1.0);
+    return parallel_test(el_count, num_copies, array_bytes);
   }
 
   if (result["sorted_range_query_test"].as<bool>()) {
@@ -2041,10 +1953,11 @@ int main(int argc, char *argv[]) {
     return unsorted_range_query_test(el_count, num_copies, 100);
   }
 
+/*
   if (result["parallel_test_perf"].as<bool>()) {
     return parallel_test_perf(el_count, num_copies, 1.0);
   }
-
+*/
   if (result["key_at_sorted_index_test"].as<bool>()) {
     return key_at_sorted_index_test(el_count);
   }
