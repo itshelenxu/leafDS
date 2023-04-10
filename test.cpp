@@ -190,7 +190,6 @@ template <typename F> inline void parallel_for(size_t start, size_t end, F f) {
   return 0;
 }
 
-
 template <class T>
 [[nodiscard]] int parallel_test_sorted_vector(uint32_t num_bytes, uint32_t total_num_elts) {
   std::vector<uint64_t> insert_times(NUM_TRIALS);
@@ -200,6 +199,7 @@ template <class T>
   assert(num_bytes % sizeof(value_type) == 0);
   uint32_t num_slots = num_bytes / sizeof(value_type);
   uint32_t num_copies = total_num_elts / num_slots;
+
   std::vector<int> order(num_copies);
   for(uint32_t i = 0; i < num_copies; i++) {
     order[i] = i;
@@ -215,11 +215,13 @@ template <class T>
   uint64_t start, end;
 
   for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
+    printf("trial %u\n", trial);
     std::vector<std::vector<value_type>> dsv(num_copies);
     for(uint32_t i = 0; i < num_copies; i++) {
       dsv[i].reserve(num_slots);
     }
 
+    // INSERT FIRST HALF
     parallel_for(0, num_copies, [&](const uint32_t &i) {
       for (uint32_t j = 0; j < num_slots / 2; j++) {
         // find the elt at most the thing to insert
@@ -232,8 +234,9 @@ template <class T>
         }
       }
     });
-    printf("size after half = %lu\n", dsv[0].size());
+    printf("\tsize after half = %lu\n", dsv[0].size());
 
+    // INSERT SECOND HALF
     start = get_usecs();
     for(uint32_t j = num_slots / 2; j < num_slots; j++) {
       parallel_for(0, num_copies, [&](const uint32_t &i) {
@@ -247,13 +250,13 @@ template <class T>
       });
     }
     end = get_usecs();
-    printf("size after second half = %lu\n", dsv[0].size());
+    printf("\tsize after second half = %lu\n", dsv[0].size());
     if (trial > 0) {
       insert_times[trial - 1] = end - start;
-      printf("second half insert time = %lu\n", end - start);
+      printf("\tsecond half insert time = %lu\n", end - start);
     }
 
-    // do finds
+    // do finds (FIND ALL)
     // shuffle data
     std::shuffle(data.begin(), data.end(), rng);
     std::vector<uint64_t> partial_sums_find(48 * 8);
@@ -266,7 +269,7 @@ template <class T>
         std::pair<T, T> val = {key, key};
         auto lo = std::lower_bound(dsv[order[i]].begin(), dsv[order[i]].end(), val);
 
-        if (lo != dsv[order[i]].end() || (*lo).first == key) { partial_sums_find[thread_id * 8]++; }
+        if (lo != dsv[order[i]].end() && (*lo).first == key) { partial_sums_find[thread_id * 8]++; }
       });
     }
     
@@ -277,37 +280,38 @@ template <class T>
     end = get_usecs();
     if (trial > 0) {
       query_times[trial - 1] = end - start;
-      printf("find time = %lu, num found %lu\n", end - start, found);
+      printf("\tfind time = %lu, num found %lu\n", end - start, found);
     }
 
-    // ParallelTools::Reducer_sum<uint64_t> sum;
-    std::vector<uint64_t> partial_sums(48 * 8);
+
+    // SUM KEYS
+    std::vector<T> partial_sums(48 * 8);
 
     start = get_usecs();
-
     parallel_for_with_id(0, num_copies, [&](const uint32_t thread_id, const uint32_t &i) {
-    // parallel_for(0, num_copies, [&](const uint32_t &i) {
       uint64_t local_sum = 0;
-      for(size_t j = 0; j < dsv[i].size(); j++) {
-        local_sum += dsv[i][j].first;
+      for(size_t j = 0; j < dsv[order[i]].size(); j++) {
+        local_sum += dsv[order[i]][j].first;
+        local_sum += dsv[order[i]][j].second;
       }
       partial_sums[thread_id * 8] += local_sum;
     });
 
     T sum = 0;
     for(uint32_t thread = 0; thread < 48; thread++) {
-      sum += partial_sums[thread * 16];
+      sum += partial_sums[thread * 8];
     }
 
     end = get_usecs();
-    printf("\ttrial %d, total sum %lu\n", trial, sum);
 
     if (trial > 0) {
       sum_times[trial - 1] = end - start;
+      printf("\tgot sum %lu, sum time %lu\n", sum, end - start);
     }
   }
 
   std::sort(insert_times.begin(), insert_times.end());
+  std::sort(query_times.begin(), query_times.end());
   std::sort(sum_times.begin(), sum_times.end());
 
   printf("Sorted vector: parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, insert_times[MEDIAN_TRIAL]);
@@ -316,6 +320,139 @@ template <class T>
   printf("Sorted vector: parallel sum time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, sum_times[MEDIAN_TRIAL]);
   return 0;
 }
+
+template <class T, uint32_t log_size, uint32_t block_size>
+[[nodiscard]] int parallel_test_leafDS(uint32_t total_num_elts) {
+  std::vector<uint64_t> insert_times(NUM_TRIALS);
+  std::vector<uint64_t> query_times(NUM_TRIALS);
+  std::vector<uint64_t> sum_times(NUM_TRIALS);
+  std::vector<uint64_t> sum_times_with_map(NUM_TRIALS);
+  std::vector<uint64_t> sum_times_direct(NUM_TRIALS);
+
+  uint32_t num_slots = log_size * block_size;
+  uint32_t num_copies = total_num_elts / num_slots;
+
+  std::vector<int> order(num_copies);
+  for(uint32_t i = 0; i < num_copies; i++) {
+    order[i] = i;
+  }
+  
+  auto rng = std::default_random_engine {};
+  std::shuffle(order.begin(), order.end(), rng);
+
+  printf("log size %u, block size %u, slots = %u, copies = %u, total elts = %u, got %u\n", log_size, block_size, num_slots, num_copies, num_slots*num_copies, total_num_elts);
+  std::seed_seq seed{0};
+  std::vector<T> data = create_random_data<uint64_t>(num_slots, std::numeric_limits<T>::max() / 2, seed);
+
+  uint64_t start, end;
+
+  for(uint32_t trial = 0; trial < NUM_TRIALS + 1; trial++) {
+    printf("trial %u\n", trial);
+    std::vector<LeafDS<log_size, log_size, block_size, T, T>> dsv(num_copies);
+
+    // INSERT FIRST HALF
+    parallel_for(0, num_copies, [&](const uint32_t &i) {
+      for (uint32_t j = 0; j < num_slots / 2; j++) {
+        // find the elt at most the thing to insert
+        T key = data[j] * 2 + 1;
+        std::pair<T, T> val = {key, key};
+        dsv[i].insert(val);
+      }
+    });
+
+    // INSERT SECOND HALF
+    start = get_usecs();
+    for(uint32_t j = num_slots / 2; j < num_slots; j++) {
+      parallel_for(0, num_copies, [&](const uint32_t &i) {
+        T key = data[j] * 2 + 1;
+        std::pair<T, T> val = {key, key};
+        dsv[order[i]].insert(val);
+      });
+    }
+    end = get_usecs();
+    if (trial > 0) {
+      insert_times[trial - 1] = end - start;
+      printf("\tsecond half insert time = %lu\n", end - start);
+    }
+
+    // do finds (FIND ALL)
+    // shuffle data
+    std::shuffle(data.begin(), data.end(), rng);
+    std::vector<uint64_t> partial_sums_find(48 * 8);
+
+    start = get_usecs();
+    for(uint32_t j = 0; j < num_slots; j++) {
+      parallel_for_with_id(0, num_copies, [&](const uint32_t thread_id, const uint32_t &i) {
+        // find the elt at most the thing to insert
+        T key = data[j] * 2;
+        if (dsv[order[i]].has(key)) { partial_sums_find[thread_id * 8]++; }
+      });
+    }
+    
+    uint64_t found = 0;
+    for(uint32_t thread = 0; thread < 48; thread++) {
+      found += partial_sums_find[thread * 8];
+    }
+    end = get_usecs();
+    if (trial > 0) {
+      query_times[trial - 1] = end - start;
+      printf("\tfind time = %lu, num found %lu\n", end - start, found);
+    }
+
+    // SUM KEYS
+    std::vector<T> partial_sums(48 * 8);
+
+    start = get_usecs();
+    parallel_for_with_id(0, num_copies, [&](const uint32_t thread_id, const uint32_t &i) {
+      partial_sums[thread_id * 8] += dsv[order[i]].sum_keys_direct();
+    });
+
+    T sum = 0;
+    for(uint32_t thread = 0; thread < 48; thread++) {
+      sum += partial_sums[thread * 8];
+    }
+
+    end = get_usecs();
+
+    if (trial > 0) {
+      sum_times_direct[trial - 1] = end - start;
+      printf("\tgot sum direct %lu, sum time %lu\n", sum, end - start);
+    }
+
+    std::vector<T> partial_sums_with_map(48 * 8);
+
+    start = get_usecs();
+    parallel_for_with_id(0, num_copies, [&](const uint32_t thread_id, const uint32_t &i) {
+      partial_sums_with_map[thread_id * 8] += dsv[order[i]].sum_keys_with_map();
+    });
+
+    T sum_with_map = 0;
+    for(uint32_t thread = 0; thread < 48; thread++) {
+      sum_with_map += partial_sums_with_map[thread * 8];
+    }
+
+    end = get_usecs();
+
+    if (trial > 0) {
+      sum_times_with_map[trial - 1] = end - start;
+      printf("\tgot sum with map %lu, sum time %lu\n", sum_with_map, end - start);
+    }
+
+  }
+
+  std::sort(insert_times.begin(), insert_times.end());
+  std::sort(query_times.begin(), query_times.end());
+  std::sort(sum_times_with_map.begin(), sum_times_with_map.end());
+  std::sort(sum_times_direct.begin(), sum_times_direct.end());
+
+  printf("leafDS: parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, insert_times[MEDIAN_TRIAL]);
+  printf("leafDS: parallel find time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, query_times[MEDIAN_TRIAL]);
+  printf("leafDS: parallel sum direct time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, sum_times_direct[MEDIAN_TRIAL]);
+  printf("leafDS: parallel sum with map time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, sum_times_with_map[MEDIAN_TRIAL]);
+  return 0;
+}
+
+
 
 /*
 [[nodiscard]] int parallel_test_unsorted_vector(uint32_t el_count, uint32_t num_copies, double prob_insert) {
@@ -1907,7 +2044,8 @@ int main(int argc, char *argv[]) {
     ("v, verify", "verify the results of the test, might be much slower")
     ("update_test", "time updating")
     ("insert_delete_test", "time updating")
-    ("parallel_test", "time to do parallel test")
+    ("parallel_vector_test", "time to do parallel test")
+    ("parallel_leafds_test", "time to do parallel test")
     ("parallel_test_perf", "just leafDS copies for perf")
     ("update_values_test", "time updating with values")
     ("unsorted_range_query_test", "time updating with values")
@@ -1941,8 +2079,21 @@ int main(int argc, char *argv[]) {
     return update_values_test(el_count, verify);
   }
   
-  if (result["parallel_test"].as<bool>()) {
-    return parallel_test(el_count, num_copies, array_bytes);
+  if (result["parallel_vector_test"].as<bool>()) {
+    auto result = parallel_test_sorted_vector<uint64_t>(64, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(128, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(256, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(512, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(1024, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(2048, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(4096, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(16384, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(32768, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(65536, el_count);
+    return result;
+  }
+  if (result["parallel_leafds_test"].as<bool>()) {
+    return parallel_test_leafDS<uint64_t, 4, 4>(el_count);
   }
 
   if (result["sorted_range_query_test"].as<bool>()) {
