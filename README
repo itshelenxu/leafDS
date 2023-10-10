@@ -9,6 +9,13 @@ to build in parallel
 
 make CILK=1 basic
 
+to run copies
+for vector
+numactl -N 1 ./basic --parallel_vector_test --el_count 268435456
+
+for leafds
+numactl -N 1 ./basic --parallel_leafds_test --el_count 268435456
+
 to run the correctness test
 ./basic --update_test=true --el_count=1000 --verify
 

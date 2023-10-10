@@ -191,7 +191,7 @@ template <typename F> inline void parallel_for(size_t start, size_t end, F f) {
 }
 
 template <class T>
-[[nodiscard]] int parallel_test_sorted_vector(uint32_t num_bytes, uint32_t total_num_elts) {
+[[nodiscard]]int parallel_test_sorted_vector(uint32_t num_bytes, uint32_t total_num_elts) {
   std::vector<uint64_t> insert_times(NUM_TRIALS);
   std::vector<uint64_t> query_times(NUM_TRIALS);
   std::vector<uint64_t> sum_times(NUM_TRIALS);
@@ -208,7 +208,7 @@ template <class T>
   auto rng = std::default_random_engine {};
   std::shuffle(order.begin(), order.end(), rng);
 
-  printf("num bytes = %u, slots = %u, copies = %u, total elts = %u, got %u\n", num_bytes, num_slots, num_copies, num_slots*num_copies, total_num_elts);
+  printf("\n\nnum bytes = %u, slots = %u, copies = %u, total elts = %u, got %u\n", num_bytes, num_slots, num_copies, num_slots*num_copies, total_num_elts);
   std::seed_seq seed{0};
   std::vector<T> data = create_random_data<uint64_t>(num_slots, std::numeric_limits<T>::max() / 2, seed);
 
@@ -292,7 +292,7 @@ template <class T>
       uint64_t local_sum = 0;
       for(size_t j = 0; j < dsv[order[i]].size(); j++) {
         local_sum += dsv[order[i]][j].first;
-        local_sum += dsv[order[i]][j].second;
+        // local_sum += dsv[order[i]][j].second;
       }
       partial_sums[thread_id * 8] += local_sum;
     });
@@ -316,7 +316,6 @@ template <class T>
 
   printf("Sorted vector: parallel insert time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, insert_times[MEDIAN_TRIAL]);
   printf("Sorted vector: parallel find time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, query_times[MEDIAN_TRIAL]);
-
   printf("Sorted vector: parallel sum time for %u copies of %u elts each = %lu us\n", num_copies, num_slots, sum_times[MEDIAN_TRIAL]);
   return 0;
 }
@@ -2087,13 +2086,24 @@ int main(int argc, char *argv[]) {
     result |= parallel_test_sorted_vector<uint64_t>(1024, el_count);
     result |= parallel_test_sorted_vector<uint64_t>(2048, el_count);
     result |= parallel_test_sorted_vector<uint64_t>(4096, el_count);
+    result |= parallel_test_sorted_vector<uint64_t>(4096, el_count);
     result |= parallel_test_sorted_vector<uint64_t>(16384, el_count);
     result |= parallel_test_sorted_vector<uint64_t>(32768, el_count);
     result |= parallel_test_sorted_vector<uint64_t>(65536, el_count);
+
     return result;
   }
   if (result["parallel_leafds_test"].as<bool>()) {
-    return parallel_test_leafDS<uint64_t, 4, 4>(el_count);
+    auto result = parallel_test_leafDS<uint64_t, 4, 4>(el_count);
+    result |= parallel_test_leafDS<uint64_t, 4, 8>(el_count);
+    result |= parallel_test_leafDS<uint64_t, 8, 8>(el_count);
+    result |= parallel_test_leafDS<uint64_t, 8, 16>(el_count);
+    result |= parallel_test_leafDS<uint64_t, 16, 16>(el_count);
+    result |= parallel_test_leafDS<uint64_t, 16, 32>(el_count);
+    result |= parallel_test_leafDS<uint64_t, 32, 32>(el_count);
+    result |= parallel_test_leafDS<uint64_t, 32, 64>(el_count);
+    result |= parallel_test_leafDS<uint64_t, 64, 64>(el_count);
+    return result;
   }
 
   if (result["sorted_range_query_test"].as<bool>()) {
